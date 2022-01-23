@@ -6,7 +6,7 @@ use syn::spanned::Spanned;
 use syn::token::{Comma, Paren};
 use syn::{
     parenthesized, parse_macro_input, Data, DeriveInput, Error, Field, Fields, FieldsNamed, Ident,
-    Token, Visibility,
+    Visibility,
 };
 
 #[proc_macro_derive(StagedBuilder, attributes(builder))]
@@ -113,7 +113,8 @@ fn stage(input: &DeriveInput, idx: usize, fields: &[ResolvedField<'_>]) -> Token
     let vis = stage_vis(&input.vis);
     let field = &fields[idx];
     let name = field.field.ident.as_ref().unwrap();
-    let ty = &field.field.ty;
+    let ty = &field.setter_type;
+    let assign = &field.setter_assign;
 
     let builder_name = stage_name(field);
 
@@ -149,7 +150,7 @@ fn stage(input: &DeriveInput, idx: usize, fields: &[ResolvedField<'_>]) -> Token
             pub fn #name(self, #name: #ty) -> #next_builder {
                 #next_builder {
                     #(#existing_names: self.#existing_names,)*
-                    #name,
+                    #name: #assign,
                     #optional_fields
                 }
             }
@@ -241,7 +242,8 @@ fn final_stage(input: &DeriveInput, fields: &[ResolvedField<'_>]) -> TokenStream
 
 fn final_stage_setter(field: &ResolvedField<'_>) -> TokenStream {
     let name = field.field.ident.as_ref().unwrap();
-    let ty = &field.field.ty;
+    let ty = &field.setter_type;
+    let assign = &field.setter_assign;
 
     let docs = format!("Sets the `{name}` field.");
 
@@ -249,7 +251,7 @@ fn final_stage_setter(field: &ResolvedField<'_>) -> TokenStream {
         #[doc = #docs]
         #[inline]
         pub fn #name(mut self, #name: #ty) -> Self {
-            self.#name = #name;
+            self.#name = #assign;
             self
         }
     }
@@ -278,13 +280,20 @@ fn resolve_fields(fields: &FieldsNamed) -> Result<Vec<ResolvedField<'_>>, Error>
 struct ResolvedField<'a> {
     field: &'a Field,
     default: Option<TokenStream>,
+    setter_type: TokenStream,
+    setter_assign: TokenStream,
 }
 
 impl<'a> ResolvedField<'a> {
     fn new(field: &'a Field) -> Result<ResolvedField<'a>, Error> {
+        let name = field.ident.as_ref().unwrap();
+        let ty = &field.ty;
+
         let mut resolved = ResolvedField {
             field,
             default: None,
+            setter_type: quote!(#ty),
+            setter_assign: quote!(#name),
         };
 
         for attr in &field.attrs {
@@ -302,6 +311,10 @@ impl<'a> ResolvedField<'a> {
                         resolved.default =
                             Some(expr.unwrap_or(quote!(std::default::Default::default())));
                     }
+                    Override::Into => {
+                        resolved.setter_type = quote!(impl std::convert::Into<#ty>);
+                        resolved.setter_assign = quote!(#name.into());
+                    }
                 }
             }
         }
@@ -312,20 +325,17 @@ impl<'a> ResolvedField<'a> {
 
 enum Override {
     Default { expr: Option<TokenStream> },
+    Into,
 }
 
 impl Parse for Override {
     fn parse(input: ParseStream) -> Result<Self, Error> {
-        let name = input.lookahead1();
-        if name.peek(Token![default]) {
-            input.parse::<Token![default]>()?;
+        let name = input.parse::<Ident>()?;
+        if name == "default" {
             let expr = if input.peek(Paren) {
                 let content;
                 parenthesized!(content in input);
                 let expr = content.parse::<TokenStream>()?;
-                if !content.is_empty() {
-                    return Err(Error::new(content.span(), "unexpected trailing data"));
-                }
 
                 Some(expr)
             } else {
@@ -333,8 +343,10 @@ impl Parse for Override {
             };
 
             Ok(Override::Default { expr })
+        } else if name == "into" {
+            Ok(Override::Into)
         } else {
-            Err(name.error())
+            Err(Error::new(name.span(), "expected `default` or `into`"))
         }
     }
 }
