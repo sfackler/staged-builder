@@ -1,6 +1,7 @@
-use staged_builder::StagedBuilder;
+use staged_builder::staged_builder;
 
-#[derive(StagedBuilder, PartialEq, Debug)]
+#[derive(PartialEq, Debug)]
+#[staged_builder]
 struct Foo {
     required: bool,
     #[builder(into)]

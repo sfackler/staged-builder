@@ -5,12 +5,45 @@ use syn::parse::{Parse, ParseStream};
 use syn::spanned::Spanned;
 use syn::token::{Comma, Paren};
 use syn::{
-    parenthesized, parse_macro_input, Data, DeriveInput, Error, Field, Fields, FieldsNamed, Ident,
-    Visibility,
+    parenthesized, parse_macro_input, Attribute, Data, DeriveInput, Error, Field, Fields,
+    FieldsNamed, Ident, Visibility,
 };
 
-#[proc_macro_derive(StagedBuilder, attributes(builder))]
-pub fn derive_staged_builder(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+#[proc_macro_attribute]
+pub fn staged_builder(
+    _args: proc_macro::TokenStream,
+    input: proc_macro::TokenStream,
+) -> proc_macro::TokenStream {
+    let input = parse_macro_input!(input as AttrInput);
+
+    let attrs = input.attrs;
+    let body = input.body;
+    quote! {
+        #(#attrs)*
+        #[derive(::staged_builder::__StagedBuilderInternalDerive)]
+        #body
+    }
+    .into()
+}
+
+struct AttrInput {
+    attrs: Vec<Attribute>,
+    body: TokenStream,
+}
+
+impl Parse for AttrInput {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        let attrs = input.call(Attribute::parse_outer)?;
+        let body = input.parse()?;
+
+        Ok(AttrInput { attrs, body })
+    }
+}
+
+// Not public API.
+#[doc(hidden)]
+#[proc_macro_derive(__StagedBuilderInternalDerive, attributes(builder))]
+pub fn __internal_derive_staged_builder(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
 
     expand(input)
