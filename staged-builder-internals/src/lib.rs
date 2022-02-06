@@ -338,11 +338,12 @@ impl<'a> ResolvedField<'a> {
             for override_ in overrides {
                 match override_ {
                     Override::Default { expr } => {
-                        resolved.default =
-                            Some(expr.unwrap_or(quote!(std::default::Default::default())));
+                        resolved.default = Some(
+                            expr.unwrap_or(quote!(staged_builder::__private::Default::default())),
+                        );
                     }
                     Override::Into => {
-                        resolved.setter_type = quote!(impl std::convert::Into<#ty>);
+                        resolved.setter_type = quote!(impl staged_builder::__private::Into<#ty>);
                         resolved.setter_assign = quote!(#name.into());
                     }
                 }
