@@ -3,6 +3,8 @@ name = "staged-builder-internals"
 version = "0.1.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
+description = "Internal implementation details for staged-builder. Do not use directly."
+repository = "https://github.com/sfackler/staged-builder"
 
 [lib]
 proc-macro = true
