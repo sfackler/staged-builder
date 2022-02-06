@@ -8,6 +8,94 @@ use syn::{
     Ident, Token, Visibility,
 };
 
+/// Creates a staged builder interface for structs.
+///
+/// The macro will create a submodule with the `snake_case` version of the type's name containing the builder types, and
+/// add a `builder` constructor function to the type. Each required field of the struct will correspond to a builder
+/// type named after it, with an additional "final" stage to set optional fields and construct the final value.
+///
+/// By default, all fields are considered required and their setters will simply take their declared type by-value. This
+/// behavior can be customized with field options.
+///
+/// # Field options
+///
+/// Options can be applied to individual fields via the `#[builder(...)]` attribute as a comma-separated sequence:
+///
+/// * `into` - Causes the setter method for the field to take `impl Into<FieldType>` rather than `FieldType` directly.
+/// * `default` - Causes the field to be considered optional. The [`Default`] trait is normally used to generate the
+///     default field value. A custom default can be specified with `default = <expr>`, where `<expr>` is an expression.
+///
+/// # Example expansion
+///
+/// ```ignore
+/// use staged_builder::staged_builder;
+///
+/// #[staged_builder]
+/// pub struct MyStruct {
+///     required_field: u32,
+///     #[builder(into)]
+///     into_required_field: String,
+///     #[builder(default)]
+///     standard_optional_field: bool,
+///     #[builder(default = "foobar".to_string())]
+///     custom_default_field: String,
+/// }
+/// ```
+///
+/// Will expand into:
+///
+/// ```ignore
+/// pub struct MyStruct {
+///     required_field: u32,
+///     into_required_field: String,
+///     standard_optional_field: bool,
+///     custom_default_field: i32,
+/// }
+///
+/// impl MyStruct {
+///     pub fn builder() -> my_struct::BuilderRequiredFieldStage {
+///         // ...
+///     }
+/// }
+///
+/// pub struct my_struct {
+///     pub struct BuilderRequiredFieldStage {}
+///
+///     impl BuilderRequiredFieldStage {
+///         pub fn required_field(self, required_field: u32) -> BuilderIntoRequiredFieldStage {
+///             // ...
+///         }
+///     }
+///
+///     pub struct BuilderIntoRequiredFieldStage {
+///         // ...
+///     }
+///
+///     impl BuilderIntoRequiredFieldStage {
+///         pub fn into_required_field(self, into_required_field: impl Into<String>) -> BuilderFinal {
+///             // ...
+///         }
+///     }
+///
+///     pub struct BuilderFinal {
+///         // ...
+///     }
+///
+///     impl BuilderFinal {
+///         pub fn standard_optional_field(self, standard_optional_field: bool) -> Self {
+///             // ...
+///         }
+///
+///         pub fn custom_default_field(self, custom_default_field: String) -> Self {
+///             // ...
+///         }
+///
+///         pub fn build(self) -> super::MyStruct {
+///             // ...
+///         }
+///     }
+/// }
+/// ```
 #[proc_macro_attribute]
 pub fn staged_builder(
     _args: proc_macro::TokenStream,
