@@ -167,7 +167,10 @@ fn stage(input: &DeriveInput, idx: usize, fields: &[ResolvedField<'_>]) -> Token
             None => (final_name(), default_field_initializers(fields)),
         };
 
-    let struct_docs = format!("The `{name}` stage builder for [`{}`]", input.ident);
+    let struct_docs = format!(
+        "The `{name}` stage builder for [`{0}`](super::{0})",
+        input.ident
+    );
     let setter_docs = format!("Sets the `{name}` field.");
 
     quote! {
@@ -238,10 +241,14 @@ fn final_stage(input: &DeriveInput, fields: &[ResolvedField<'_>]) -> TokenStream
         .collect::<Vec<_>>();
     let types = fields.iter().map(|f| &f.field.ty).collect::<Vec<_>>();
 
-    let setters = fields.iter().map(final_stage_setter);
+    let setters = fields
+        .iter()
+        .filter(|f| f.default.is_some())
+        .map(final_stage_setter);
 
-    let struct_docs = format!("The final stage builder for [`{struct_name}`]");
-    let build_docs = format!("Consumes the builder, returning a [`{struct_name}`].");
+    let struct_docs = format!("The final stage builder for [`{struct_name}`](super::{struct_name}");
+    let build_docs =
+        format!("Consumes the builder, returning a [`{struct_name}`](super::{struct_name}).");
 
     quote! {
         #[doc = #struct_docs]
@@ -254,18 +261,9 @@ fn final_stage(input: &DeriveInput, fields: &[ResolvedField<'_>]) -> TokenStream
 
             #[doc = #build_docs]
             #[inline]
-            pub fn build(self) -> #struct_name {
-                #struct_name {
+            pub fn build(self) -> super::#struct_name {
+                super::#struct_name {
                     #(#names: self.#names,)*
-                }
-            }
-        }
-
-        impl From<#struct_name> for #builder_name {
-            #[inline]
-            fn from(s: #struct_name) -> Self {
-                #builder_name {
-                    #(#names: s.#names,)*
                 }
             }
         }

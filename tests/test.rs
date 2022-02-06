@@ -22,16 +22,4 @@ fn basic() {
         custom_default: 42,
     };
     assert_eq!(actual, expected);
-
-    let actual = foo::BuilderFinal::from(actual)
-        .normal_default("b")
-        .required(false)
-        .build();
-    let expected = Foo {
-        required: false,
-        required2: "a".to_string(),
-        normal_default: "b".to_string(),
-        custom_default: 42,
-    };
-    assert_eq!(actual, expected);
 }
