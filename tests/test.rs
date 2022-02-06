@@ -8,7 +8,7 @@ struct Foo {
     required2: String,
     #[builder(default, into)]
     normal_default: String,
-    #[builder(default(42))]
+    #[builder(default = 42)]
     custom_default: i32,
 }
 

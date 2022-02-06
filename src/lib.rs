@@ -1,12 +1,11 @@
 use heck::{ToSnakeCase, ToUpperCamelCase};
 use proc_macro2::{Span, TokenStream};
-use quote::quote;
+use quote::{quote, ToTokens};
 use syn::parse::{Parse, ParseStream};
 use syn::spanned::Spanned;
-use syn::token::{Comma, Paren};
 use syn::{
-    parenthesized, parse_macro_input, Attribute, Data, DeriveInput, Error, Field, Fields,
-    FieldsNamed, Ident, Visibility,
+    parse_macro_input, Attribute, Data, DeriveInput, Error, Expr, Field, Fields, FieldsNamed,
+    Ident, Token, Visibility,
 };
 
 #[proc_macro_attribute]
@@ -335,7 +334,7 @@ impl<'a> ResolvedField<'a> {
             }
 
             let overrides = attr.parse_args_with(|p: ParseStream<'_>| {
-                p.parse_terminated::<_, Comma>(Override::parse)
+                p.parse_terminated::<_, Token![,]>(Override::parse)
             })?;
 
             for override_ in overrides {
@@ -365,12 +364,11 @@ impl Parse for Override {
     fn parse(input: ParseStream) -> Result<Self, Error> {
         let name = input.parse::<Ident>()?;
         if name == "default" {
-            let expr = if input.peek(Paren) {
-                let content;
-                parenthesized!(content in input);
-                let expr = content.parse::<TokenStream>()?;
+            let expr = if input.peek(Token![=]) {
+                input.parse::<Token![=]>()?;
+                let expr = input.parse::<Expr>()?;
 
-                Some(expr)
+                Some(expr.to_token_stream())
             } else {
                 None
             };
