@@ -17,6 +17,13 @@ use syn::{
 /// By default, all fields are considered required and their setters will simply take their declared type by-value. This
 /// behavior can be customized with field options.
 ///
+/// # Struct options
+///
+/// Options can be applied at the struct level via the `#[builder(...)]` attribute as a comma-separated sequence:
+///
+/// * `validate` - The final `build` method will return a `Result`, calling the type's `Validate` implementation before
+///     returning the constructed value.
+///
 /// # Field options
 ///
 /// Options can be applied to individual fields via the `#[builder(...)]` attribute as a comma-separated sequence:
@@ -106,8 +113,8 @@ pub fn staged_builder(
     let attrs = input.attrs;
     let body = input.body;
     quote! {
-        #(#attrs)*
         #[derive(::staged_builder::__StagedBuilderInternalDerive)]
+        #(#attrs)*
         #body
     }
     .into()
@@ -159,6 +166,7 @@ fn expand(input: DeriveInput) -> Result<TokenStream, Error> {
         }
     };
 
+    let overrides = StructOverrides::new(&input.attrs)?;
     let fields = resolve_fields(fields)?;
 
     let vis = &input.vis;
@@ -173,7 +181,7 @@ fn expand(input: DeriveInput) -> Result<TokenStream, Error> {
         .enumerate()
         .filter(|(_, f)| f.default.is_none())
         .map(|(i, _)| stage(&input, i, &fields));
-    let final_stage = final_stage(&input, &fields);
+    let final_stage = final_stage(&input, &overrides, &fields);
 
     let tokens = quote! {
         #builder_impl
@@ -319,24 +327,32 @@ fn final_name() -> Ident {
     Ident::new("BuilderFinal", Span::call_site())
 }
 
-fn final_stage(input: &DeriveInput, fields: &[ResolvedField<'_>]) -> TokenStream {
+fn final_stage(
+    input: &DeriveInput,
+    overrides: &StructOverrides,
+    fields: &[ResolvedField<'_>],
+) -> TokenStream {
     let vis = stage_vis(&input.vis);
     let builder_name = final_name();
     let struct_name = &input.ident;
-    let names = fields
-        .iter()
-        .map(|f| f.field.ident.as_ref().unwrap())
-        .collect::<Vec<_>>();
+    let names = fields.iter().map(|f| f.field.ident.as_ref().unwrap());
     let types = fields.iter().map(|f| &f.field.ty).collect::<Vec<_>>();
+
+    let struct_docs = format!("The final stage builder for [`{struct_name}`](super::{struct_name}");
 
     let setters = fields
         .iter()
         .filter(|f| f.default.is_some())
         .map(final_stage_setter);
 
-    let struct_docs = format!("The final stage builder for [`{struct_name}`](super::{struct_name}");
     let build_docs =
         format!("Consumes the builder, returning a [`{struct_name}`](super::{struct_name}).");
+
+    let build = if overrides.validate {
+        validated_build(input, fields)
+    } else {
+        unvalidated_build(input, fields)
+    };
 
     quote! {
         #[doc = #struct_docs]
@@ -348,12 +364,7 @@ fn final_stage(input: &DeriveInput, fields: &[ResolvedField<'_>]) -> TokenStream
             #(#setters)*
 
             #[doc = #build_docs]
-            #[inline]
-            pub fn build(self) -> super::#struct_name {
-                super::#struct_name {
-                    #(#names: self.#names,)*
-                }
-            }
+            #build
         }
     }
 }
@@ -375,6 +386,47 @@ fn final_stage_setter(field: &ResolvedField<'_>) -> TokenStream {
     }
 }
 
+fn validated_build(input: &DeriveInput, fields: &[ResolvedField<'_>]) -> TokenStream {
+    let struct_name = &input.ident;
+    let names = fields
+        .iter()
+        .map(|f| f.field.ident.as_ref().unwrap())
+        .collect::<Vec<_>>();
+
+    quote! {
+        #[inline]
+        pub fn build(
+            self,
+        ) -> staged_builder::__private::Result<
+            super::#struct_name,
+            <super::#struct_name as staged_builder::Validate>::Error,
+        > {
+            let value = super::#struct_name {
+                #(#names: self.#names,)*
+            };
+            staged_builder::Validate::validate(&value)?;
+            staged_builder::__private::Result::Ok(value)
+        }
+    }
+}
+
+fn unvalidated_build(input: &DeriveInput, fields: &[ResolvedField<'_>]) -> TokenStream {
+    let struct_name = &input.ident;
+    let names = fields
+        .iter()
+        .map(|f| f.field.ident.as_ref().unwrap())
+        .collect::<Vec<_>>();
+
+    quote! {
+        #[inline]
+        pub fn build(self) -> super::#struct_name {
+            super::#struct_name {
+                #(#names: self.#names,)*
+            }
+        }
+    }
+}
+
 fn resolve_fields(fields: &FieldsNamed) -> Result<Vec<ResolvedField<'_>>, Error> {
     let mut resolved_fields = vec![];
     let mut error = None::<Error>;
@@ -392,6 +444,49 @@ fn resolve_fields(fields: &FieldsNamed) -> Result<Vec<ResolvedField<'_>>, Error>
     match error {
         Some(error) => Err(error),
         None => Ok(resolved_fields),
+    }
+}
+
+struct StructOverrides {
+    validate: bool,
+}
+
+impl StructOverrides {
+    fn new(attrs: &[Attribute]) -> Result<Self, Error> {
+        let mut overrides = StructOverrides { validate: false };
+
+        for attr in attrs {
+            if !attr.path.is_ident("builder") {
+                continue;
+            }
+
+            let parsed = attr.parse_args_with(|p: ParseStream<'_>| {
+                p.parse_terminated::<_, Token![,]>(StructOverride::parse)
+            })?;
+
+            for override_ in parsed {
+                match override_ {
+                    StructOverride::Validate => overrides.validate = true,
+                }
+            }
+        }
+
+        Ok(overrides)
+    }
+}
+
+enum StructOverride {
+    Validate,
+}
+
+impl Parse for StructOverride {
+    fn parse(input: ParseStream) -> Result<Self, Error> {
+        let name = input.parse::<Ident>()?;
+        if name == "validate" {
+            Ok(StructOverride::Validate)
+        } else {
+            Err(Error::new(name.span(), "expected `validate`"))
+        }
     }
 }
 
@@ -420,17 +515,17 @@ impl<'a> ResolvedField<'a> {
             }
 
             let overrides = attr.parse_args_with(|p: ParseStream<'_>| {
-                p.parse_terminated::<_, Token![,]>(Override::parse)
+                p.parse_terminated::<_, Token![,]>(FieldOverride::parse)
             })?;
 
             for override_ in overrides {
                 match override_ {
-                    Override::Default { expr } => {
+                    FieldOverride::Default { expr } => {
                         resolved.default = Some(
                             expr.unwrap_or(quote!(staged_builder::__private::Default::default())),
                         );
                     }
-                    Override::Into => {
+                    FieldOverride::Into => {
                         resolved.setter_type = quote!(impl staged_builder::__private::Into<#ty>);
                         resolved.setter_assign = quote!(#name.into());
                     }
@@ -442,12 +537,12 @@ impl<'a> ResolvedField<'a> {
     }
 }
 
-enum Override {
+enum FieldOverride {
     Default { expr: Option<TokenStream> },
     Into,
 }
 
-impl Parse for Override {
+impl Parse for FieldOverride {
     fn parse(input: ParseStream) -> Result<Self, Error> {
         let name = input.parse::<Ident>()?;
         if name == "default" {
@@ -460,9 +555,9 @@ impl Parse for Override {
                 None
             };
 
-            Ok(Override::Default { expr })
+            Ok(FieldOverride::Default { expr })
         } else if name == "into" {
-            Ok(Override::Into)
+            Ok(FieldOverride::Into)
         } else {
             Err(Error::new(name.span(), "expected `default` or `into`"))
         }

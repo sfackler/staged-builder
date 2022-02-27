@@ -41,4 +41,16 @@ pub use staged_builder_internals::staged_builder;
 pub mod __private {
     pub use core::convert::Into;
     pub use core::default::Default;
+    pub use core::result::Result;
+}
+
+/// A trait for types which validate their state before construction finishes.
+///
+/// The generated builder will call this method if the `#[builder(validate)]` attribute is placed at the struct level.
+pub trait Validate {
+    /// The error returned for an invalid value.
+    type Error;
+
+    /// Validates the state of `self`.
+    fn validate(&self) -> Result<(), Self::Error>;
 }

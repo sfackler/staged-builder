@@ -1,4 +1,4 @@
-use staged_builder::staged_builder;
+use staged_builder::{staged_builder, Validate};
 
 #[derive(PartialEq, Debug)]
 #[staged_builder]
@@ -22,4 +22,28 @@ fn basic() {
         custom_default: 42,
     };
     assert_eq!(actual, expected);
+}
+
+#[staged_builder]
+#[builder(validate)]
+struct Validated {
+    even: u32,
+}
+
+impl Validate for Validated {
+    type Error = &'static str;
+
+    fn validate(&self) -> Result<(), Self::Error> {
+        if self.even % 2 == 0 {
+            Ok(())
+        } else {
+            Err("is odd")
+        }
+    }
+}
+
+#[test]
+fn validate() {
+    Validated::builder().even(0).build().unwrap();
+    Validated::builder().even(1).build().err().unwrap();
 }
