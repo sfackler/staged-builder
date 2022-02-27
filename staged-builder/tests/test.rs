@@ -47,3 +47,23 @@ fn validate() {
     Validated::builder().even(0).build().unwrap();
     Validated::builder().even(1).build().err().unwrap();
 }
+
+#[derive(PartialEq, Debug)]
+#[staged_builder]
+struct Collections {
+    #[builder(list(item(type = u32)))]
+    list: Vec<u32>,
+}
+
+#[test]
+fn collections() {
+    let actual = Collections::builder().push_list(1).push_list(2).build();
+    let expected = Collections { list: vec![1, 2] };
+    assert_eq!(actual, expected);
+
+    let actual = Collections::builder().push_list(0).list([1, 2]).build();
+    assert_eq!(actual, expected);
+
+    let actual = Collections::builder().push_list(1).extend_list([2]).build();
+    assert_eq!(actual, expected);
+}

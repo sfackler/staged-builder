@@ -1,11 +1,12 @@
 use heck::{ToSnakeCase, ToUpperCamelCase};
 use proc_macro2::{Span, TokenStream};
 use quote::{quote, ToTokens};
+use syn::ext::IdentExt;
 use syn::parse::{Parse, ParseStream};
 use syn::spanned::Spanned;
 use syn::{
-    parse_macro_input, Attribute, Data, DeriveInput, Error, Expr, Field, Fields, FieldsNamed,
-    Ident, Token, Visibility,
+    parenthesized, parse_macro_input, Attribute, Data, DeriveInput, Error, Expr, Field, Fields,
+    FieldsNamed, Ident, Token, Type, Visibility,
 };
 
 /// Creates a staged builder interface for structs.
@@ -241,8 +242,11 @@ fn stage(input: &DeriveInput, idx: usize, fields: &[ResolvedField<'_>]) -> Token
     let vis = stage_vis(&input.vis);
     let field = &fields[idx];
     let name = field.field.ident.as_ref().unwrap();
-    let ty = &field.setter_type;
-    let assign = &field.setter_assign;
+
+    let (type_, assign) = match &field.mode {
+        FieldMode::Normal { type_, assign } => (type_, assign),
+        _ => unreachable!(),
+    };
 
     let builder_name = stage_name(field);
 
@@ -264,7 +268,7 @@ fn stage(input: &DeriveInput, idx: usize, fields: &[ResolvedField<'_>]) -> Token
         };
 
     let struct_docs = format!(
-        "The `{name}` stage builder for [`{0}`](super::{0})",
+        "The `{name}` stage builder for [`{0}`](super::{0}).",
         input.ident
     );
     let setter_docs = format!("Sets the `{name}` field.");
@@ -278,7 +282,7 @@ fn stage(input: &DeriveInput, idx: usize, fields: &[ResolvedField<'_>]) -> Token
         impl #builder_name {
             #[doc = #setter_docs]
             #[inline]
-            pub fn #name(self, #name: #ty) -> #next_builder {
+            pub fn #name(self, #name: #type_) -> #next_builder {
                 #next_builder {
                     #(#existing_names: self.#existing_names,)*
                     #name: #assign,
@@ -338,7 +342,8 @@ fn final_stage(
     let names = fields.iter().map(|f| f.field.ident.as_ref().unwrap());
     let types = fields.iter().map(|f| &f.field.ty).collect::<Vec<_>>();
 
-    let struct_docs = format!("The final stage builder for [`{struct_name}`](super::{struct_name}");
+    let struct_docs =
+        format!("The final stage builder for [`{struct_name}`](super::{struct_name}).");
 
     let setters = fields
         .iter()
@@ -357,7 +362,7 @@ fn final_stage(
     quote! {
         #[doc = #struct_docs]
         #vis struct #builder_name {
-            #(#names: #types,)*
+            #(pub(super) #names: #types,)*
         }
 
         impl #builder_name {
@@ -371,17 +376,58 @@ fn final_stage(
 
 fn final_stage_setter(field: &ResolvedField<'_>) -> TokenStream {
     let name = field.field.ident.as_ref().unwrap();
-    let ty = &field.setter_type;
-    let assign = &field.setter_assign;
 
-    let docs = format!("Sets the `{name}` field.");
+    match &field.mode {
+        FieldMode::Normal { type_, assign } => {
+            let docs = format!("Sets the `{name}` field.");
+            quote! {
+                #[doc = #docs]
+                #[inline]
+                pub fn #name(mut self, #name: #type_) -> Self {
+                    self.#name = #assign;
+                    self
+                }
+            }
+        }
+        FieldMode::UnaryCollection { item } => {
+            let push_docs = format!("Pushes a value to the `{name}` field.");
+            let push_method = Ident::new(&format!("push_{name}"), name.span());
 
-    quote! {
-        #[doc = #docs]
-        #[inline]
-        pub fn #name(mut self, #name: #ty) -> Self {
-            self.#name = #assign;
-            self
+            let docs = format!("Sets the `{name}` field.");
+
+            let extend_docs = format!("Adds values to the `{name}` field.");
+            let extend_method = Ident::new(&format!("extend_{name}"), name.span());
+
+            quote! {
+                #[doc = #push_docs]
+                #[inline]
+                pub fn #push_method(mut self, #name: #item) -> Self {
+                    self.#name.push(#name);
+                    self
+                }
+
+                #[doc = #docs]
+                #[inline]
+                pub fn #name(
+                    mut self,
+                    #name: impl staged_builder::__private::IntoIterator<Item = #item>,
+                ) -> Self
+                {
+                    self.#name = staged_builder::__private::FromIterator::from_iter(#name);
+                    self
+                }
+
+                #[doc = #extend_docs]
+                #[inline]
+                pub fn #extend_method(
+                    mut self,
+                    #name: impl staged_builder::__private::IntoIterator<Item = #item>,
+                ) -> Self
+                {
+                    staged_builder::__private::Extend::extend(&mut self.#name, #name);
+                    self
+                }
+            }
         }
     }
 }
@@ -490,11 +536,20 @@ impl Parse for StructOverride {
     }
 }
 
+enum FieldMode {
+    Normal {
+        type_: TokenStream,
+        assign: TokenStream,
+    },
+    UnaryCollection {
+        item: TokenStream,
+    },
+}
+
 struct ResolvedField<'a> {
     field: &'a Field,
     default: Option<TokenStream>,
-    setter_type: TokenStream,
-    setter_assign: TokenStream,
+    mode: FieldMode,
 }
 
 impl<'a> ResolvedField<'a> {
@@ -505,8 +560,10 @@ impl<'a> ResolvedField<'a> {
         let mut resolved = ResolvedField {
             field,
             default: None,
-            setter_type: quote!(#ty),
-            setter_assign: quote!(#name),
+            mode: FieldMode::Normal {
+                type_: quote!(#ty),
+                assign: quote!(#name),
+            },
         };
 
         for attr in &field.attrs {
@@ -526,8 +583,15 @@ impl<'a> ResolvedField<'a> {
                         );
                     }
                     FieldOverride::Into => {
-                        resolved.setter_type = quote!(impl staged_builder::__private::Into<#ty>);
-                        resolved.setter_assign = quote!(#name.into());
+                        resolved.mode = FieldMode::Normal {
+                            type_: quote!(impl staged_builder::__private::Into<#ty>),
+                            assign: quote!(#name.into()),
+                        };
+                    }
+                    FieldOverride::List { item } => {
+                        resolved.default =
+                            Some(quote!(staged_builder::__private::Default::default()));
+                        resolved.mode = FieldMode::UnaryCollection { item };
                     }
                 }
             }
@@ -540,6 +604,7 @@ impl<'a> ResolvedField<'a> {
 enum FieldOverride {
     Default { expr: Option<TokenStream> },
     Into,
+    List { item: TokenStream },
 }
 
 impl Parse for FieldOverride {
@@ -558,8 +623,74 @@ impl Parse for FieldOverride {
             Ok(FieldOverride::Default { expr })
         } else if name == "into" {
             Ok(FieldOverride::Into)
+        } else if name == "list" {
+            let content;
+            parenthesized!(content in input);
+
+            let mut item = None;
+            for override_ in content.parse_terminated::<_, Token![,]>(UnaryOverride::parse)? {
+                match override_ {
+                    UnaryOverride::Item { type_ } => {
+                        item = Some(type_);
+                    }
+                }
+            }
+
+            let item =
+                item.ok_or_else(|| Error::new(name.span(), "missing `item` configuration"))?;
+            Ok(FieldOverride::List { item })
         } else {
             Err(Error::new(name.span(), "expected `default` or `into`"))
+        }
+    }
+}
+
+enum UnaryOverride {
+    Item { type_: TokenStream },
+}
+
+impl Parse for UnaryOverride {
+    fn parse(input: ParseStream) -> Result<Self, Error> {
+        let name = input.parse::<Ident>()?;
+        if name == "item" {
+            let content;
+            parenthesized!(content in input);
+
+            let mut type_ = None;
+            for override_ in
+                content.parse_terminated::<_, Token![,]>(CollectionTypeOverride::parse)?
+            {
+                match override_ {
+                    CollectionTypeOverride::Type { type_: t } => type_ = Some(t),
+                }
+            }
+
+            let type_ =
+                type_.ok_or_else(|| Error::new(name.span(), "missing `type` configuration"))?;
+
+            Ok(UnaryOverride::Item { type_ })
+        } else {
+            Err(Error::new(name.span(), "expected `item`"))
+        }
+    }
+}
+
+enum CollectionTypeOverride {
+    Type { type_: TokenStream },
+}
+
+impl Parse for CollectionTypeOverride {
+    fn parse(input: ParseStream) -> Result<Self, Error> {
+        let name = input.call(Ident::parse_any)?;
+        if name == "type" {
+            input.parse::<Token![=]>()?;
+            let type_ = input.parse::<Type>()?;
+
+            Ok(CollectionTypeOverride::Type {
+                type_: type_.to_token_stream(),
+            })
+        } else {
+            Err(Error::new(name.span(), "expected `type`"))
         }
     }
 }
