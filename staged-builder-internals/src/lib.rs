@@ -434,6 +434,45 @@ fn final_stage_setter(field: &ResolvedField<'_>) -> TokenStream {
                 }
             }
         }
+        FieldMode::Map { key, value } => {
+            let insert_docs = format!("Adds an entry to the `{name}` field.");
+            let insert_method = Ident::new(&format!("insert_{name}"), name.span());
+
+            let docs = format!("Sets the `{name}` field.");
+
+            let extend_docs = format!("Adds entries to the `{name}` field.");
+            let extend_method = Ident::new(&format!("extend_{name}"), name.span());
+
+            quote! {
+                #[doc = #insert_docs]
+                #[inline]
+                pub fn #insert_method(mut self, key: #key, value: #value) -> Self {
+                    self.#name.insert(key, value);
+                    self
+                }
+
+                #[doc = #docs]
+                #[inline]
+                pub fn #name(
+                    mut self,
+                    #name: impl staged_builder::__private::IntoIterator<Item = (#key, #value)>,
+                ) -> Self {
+                    self.#name = staged_builder::__private::FromIterator::from_iter(#name);
+                    self
+                }
+
+                #[doc = #extend_docs]
+                #[inline]
+                pub fn #extend_method(
+                    mut self,
+                    #name: impl staged_builder::__private::IntoIterator<Item = (#key, #value)>,
+                ) -> Self
+                {
+                    staged_builder::__private::Extend::extend(&mut self.#name, #name);
+                    self
+                }
+            }
+        }
     }
 }
 
@@ -550,6 +589,10 @@ enum FieldMode {
         kind: UnaryKind,
         item: TokenStream,
     },
+    Map {
+        key: TokenStream,
+        value: TokenStream,
+    },
 }
 
 enum UnaryKind {
@@ -604,6 +647,11 @@ impl<'a> ResolvedField<'a> {
                             Some(quote!(staged_builder::__private::Default::default()));
                         resolved.mode = FieldMode::UnaryCollection { kind, item };
                     }
+                    FieldOverride::Map { key, value } => {
+                        resolved.default =
+                            Some(quote!(staged_builder::__private::Default::default()));
+                        resolved.mode = FieldMode::Map { key, value };
+                    }
                 }
             }
         }
@@ -613,9 +661,18 @@ impl<'a> ResolvedField<'a> {
 }
 
 enum FieldOverride {
-    Default { expr: Option<TokenStream> },
+    Default {
+        expr: Option<TokenStream>,
+    },
     Into,
-    UnaryCollection { kind: UnaryKind, item: TokenStream },
+    UnaryCollection {
+        kind: UnaryKind,
+        item: TokenStream,
+    },
+    Map {
+        key: TokenStream,
+        value: TokenStream,
+    },
 }
 
 impl Parse for FieldOverride {
@@ -655,6 +712,24 @@ impl Parse for FieldOverride {
             let item =
                 item.ok_or_else(|| Error::new(name.span(), "missing `item` configuration"))?;
             Ok(FieldOverride::UnaryCollection { kind, item })
+        } else if name == "map" {
+            let content;
+            parenthesized!(content in input);
+
+            let mut key = None;
+            let mut value = None;
+            for override_ in content.parse_terminated::<_, Token![,]>(BinaryOverride::parse)? {
+                match override_ {
+                    BinaryOverride::Key { type_ } => key = Some(type_),
+                    BinaryOverride::Value { type_ } => value = Some(type_),
+                }
+            }
+
+            let key = key.ok_or_else(|| Error::new(name.span(), "missing `key` configuration"))?;
+            let value =
+                value.ok_or_else(|| Error::new(name.span(), "missing `value` configuration"))?;
+
+            Ok(FieldOverride::Map { key, value })
         } else {
             Err(Error::new(
                 name.span(),
@@ -710,6 +785,41 @@ impl Parse for CollectionTypeOverride {
             })
         } else {
             Err(Error::new(name.span(), "expected `type`"))
+        }
+    }
+}
+
+enum BinaryOverride {
+    Key { type_: TokenStream },
+    Value { type_: TokenStream },
+}
+
+impl Parse for BinaryOverride {
+    fn parse(input: ParseStream) -> Result<Self, Error> {
+        let name = input.parse::<Ident>()?;
+        if name == "key" || name == "value" {
+            let content;
+            parenthesized!(content in input);
+
+            let mut type_ = None;
+            for override_ in
+                content.parse_terminated::<_, Token![,]>(CollectionTypeOverride::parse)?
+            {
+                match override_ {
+                    CollectionTypeOverride::Type { type_: t } => type_ = Some(t),
+                }
+            }
+
+            let type_ =
+                type_.ok_or_else(|| Error::new(name.span(), "missing `type` configuration"))?;
+
+            if name == "key" {
+                Ok(BinaryOverride::Key { type_ })
+            } else {
+                Ok(BinaryOverride::Value { type_ })
+            }
+        } else {
+            Err(Error::new(name.span(), "expected `key` or `value`"))
         }
     }
 }

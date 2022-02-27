@@ -1,5 +1,5 @@
 use staged_builder::{staged_builder, Validate};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 #[derive(PartialEq, Debug)]
 #[staged_builder]
@@ -56,6 +56,8 @@ struct Collections {
     list: Vec<u32>,
     #[builder(set(item(type = &'static str)))]
     set: HashSet<&'static str>,
+    #[builder(map(key(type = i32), value(type = bool)))]
+    map: HashMap<i32, bool>,
 }
 
 #[test]
@@ -65,10 +67,13 @@ fn collections() {
         .push_list(2)
         .insert_set("hi")
         .insert_set("there")
+        .insert_map(1, true)
+        .insert_map(2, false)
         .build();
     let expected = Collections {
         list: vec![1, 2],
         set: HashSet::from(["hi", "there"]),
+        map: HashMap::from([(1, true), (2, false)]),
     };
     assert_eq!(actual, expected);
 
@@ -76,6 +81,7 @@ fn collections() {
         .push_list(0)
         .list([1, 2])
         .set(["hi", "there"])
+        .map([(1, true), (2, false)])
         .build();
     assert_eq!(actual, expected);
 
@@ -84,6 +90,8 @@ fn collections() {
         .extend_list([2])
         .insert_set("hi")
         .extend_set(["there"])
+        .insert_map(1, true)
+        .extend_map([(2, false)])
         .build();
     assert_eq!(actual, expected);
 }
