@@ -389,9 +389,14 @@ fn final_stage_setter(field: &ResolvedField<'_>) -> TokenStream {
                 }
             }
         }
-        FieldMode::UnaryCollection { item } => {
-            let push_docs = format!("Pushes a value to the `{name}` field.");
-            let push_method = Ident::new(&format!("push_{name}"), name.span());
+        FieldMode::UnaryCollection { kind, item } => {
+            let push_setter = match kind {
+                UnaryKind::List => Ident::new("push", name.span()),
+                UnaryKind::Set => Ident::new("insert", name.span()),
+            };
+
+            let push_docs = format!("Adds a value to the `{name}` field.");
+            let push_method = Ident::new(&format!("{push_setter}_{name}"), name.span());
 
             let docs = format!("Sets the `{name}` field.");
 
@@ -402,7 +407,7 @@ fn final_stage_setter(field: &ResolvedField<'_>) -> TokenStream {
                 #[doc = #push_docs]
                 #[inline]
                 pub fn #push_method(mut self, #name: #item) -> Self {
-                    self.#name.push(#name);
+                    self.#name.#push_setter(#name);
                     self
                 }
 
@@ -542,8 +547,14 @@ enum FieldMode {
         assign: TokenStream,
     },
     UnaryCollection {
+        kind: UnaryKind,
         item: TokenStream,
     },
+}
+
+enum UnaryKind {
+    List,
+    Set,
 }
 
 struct ResolvedField<'a> {
@@ -588,10 +599,10 @@ impl<'a> ResolvedField<'a> {
                             assign: quote!(#name.into()),
                         };
                     }
-                    FieldOverride::List { item } => {
+                    FieldOverride::UnaryCollection { kind, item } => {
                         resolved.default =
                             Some(quote!(staged_builder::__private::Default::default()));
-                        resolved.mode = FieldMode::UnaryCollection { item };
+                        resolved.mode = FieldMode::UnaryCollection { kind, item };
                     }
                 }
             }
@@ -604,7 +615,7 @@ impl<'a> ResolvedField<'a> {
 enum FieldOverride {
     Default { expr: Option<TokenStream> },
     Into,
-    List { item: TokenStream },
+    UnaryCollection { kind: UnaryKind, item: TokenStream },
 }
 
 impl Parse for FieldOverride {
@@ -623,7 +634,7 @@ impl Parse for FieldOverride {
             Ok(FieldOverride::Default { expr })
         } else if name == "into" {
             Ok(FieldOverride::Into)
-        } else if name == "list" {
+        } else if name == "list" || name == "set" {
             let content;
             parenthesized!(content in input);
 
@@ -636,11 +647,19 @@ impl Parse for FieldOverride {
                 }
             }
 
+            let kind = if name == "list" {
+                UnaryKind::List
+            } else {
+                UnaryKind::Set
+            };
             let item =
                 item.ok_or_else(|| Error::new(name.span(), "missing `item` configuration"))?;
-            Ok(FieldOverride::List { item })
+            Ok(FieldOverride::UnaryCollection { kind, item })
         } else {
-            Err(Error::new(name.span(), "expected `default` or `into`"))
+            Err(Error::new(
+                name.span(),
+                "expected `default`, `into`, `list`, or `set`",
+            ))
         }
     }
 }

@@ -1,4 +1,5 @@
 use staged_builder::{staged_builder, Validate};
+use std::collections::HashSet;
 
 #[derive(PartialEq, Debug)]
 #[staged_builder]
@@ -53,17 +54,36 @@ fn validate() {
 struct Collections {
     #[builder(list(item(type = u32)))]
     list: Vec<u32>,
+    #[builder(set(item(type = &'static str)))]
+    set: HashSet<&'static str>,
 }
 
 #[test]
 fn collections() {
-    let actual = Collections::builder().push_list(1).push_list(2).build();
-    let expected = Collections { list: vec![1, 2] };
+    let actual = Collections::builder()
+        .push_list(1)
+        .push_list(2)
+        .insert_set("hi")
+        .insert_set("there")
+        .build();
+    let expected = Collections {
+        list: vec![1, 2],
+        set: HashSet::from(["hi", "there"]),
+    };
     assert_eq!(actual, expected);
 
-    let actual = Collections::builder().push_list(0).list([1, 2]).build();
+    let actual = Collections::builder()
+        .push_list(0)
+        .list([1, 2])
+        .set(["hi", "there"])
+        .build();
     assert_eq!(actual, expected);
 
-    let actual = Collections::builder().push_list(1).extend_list([2]).build();
+    let actual = Collections::builder()
+        .push_list(1)
+        .extend_list([2])
+        .insert_set("hi")
+        .extend_set(["there"])
+        .build();
     assert_eq!(actual, expected);
 }
