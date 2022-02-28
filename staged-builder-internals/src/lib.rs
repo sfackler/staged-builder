@@ -1,11 +1,12 @@
 use heck::{ToSnakeCase, ToUpperCamelCase};
 use proc_macro2::{Span, TokenStream};
 use quote::{quote, ToTokens};
+use syn::ext::IdentExt;
 use syn::parse::{Parse, ParseStream};
 use syn::spanned::Spanned;
 use syn::{
-    parse_macro_input, Attribute, Data, DeriveInput, Error, Expr, Field, Fields, FieldsNamed,
-    Ident, Token, Visibility,
+    parenthesized, parse_macro_input, Attribute, Data, DeriveInput, Error, Expr, Field, Fields,
+    FieldsNamed, Ident, Token, Type, Visibility,
 };
 
 /// Creates a staged builder interface for structs.
@@ -31,6 +32,21 @@ use syn::{
 /// * `into` - Causes the setter method for the field to take `impl Into<FieldType>` rather than `FieldType` directly.
 /// * `default` - Causes the field to be considered optional. The [`Default`] trait is normally used to generate the
 ///     default field value. A custom default can be specified with `default = <expr>`, where `<expr>` is an expression.
+/// * `list` - Causes the field to be treated as a "list style" type. It will default to an empty collection, and three
+///     setter methods will be generated: `push_foo` to add a single value, `foo` to set the contents, and `extend_foo`
+///     to exend the collection with new values. The underlying type must have a `push` method, a [`FromIterator`]
+///     implementation, and an [`Extend`] implementation. The type of the item must be provided in the attribute:
+///     `#[builder(list(item(type = YourItemType)))]`.
+/// * `set` - Causes the field to be treated as a "set style" type. It will default to an empty collection, and three
+///     setter methods will be generated: `insert_foo` to add a single value, `foo` to set the contents, and
+///     `extend_foo` to exend the collection with new values. The underlying type must have an `insert` method, a
+///     [`FromIterator`] implementation, and an [`Extend`] implementation. The type of the item must be provided in the
+///     attribute: `#[builder(set(item(type = YourItemType)))]`.
+/// * `map` - Causes the field to be treated as a "map style" type. It will default to an empty collection, and three
+///     setter methods will be generated: `insert_foo` to add a single entry, `foo` to set the contents, and
+///     `extend_foo` to exend the collection with new entries. The underlying type must have an `insert` method, a
+///     [`FromIterator`] implementation, and an [`Extend`] implementation. The key and value types must be provided in
+///     the attribute: `#[builder(map(key(type = YourKeyType), value(type = YourValueType)))]`.
 ///
 /// # Example expansion
 ///
@@ -46,6 +62,8 @@ use syn::{
 ///     standard_optional_field: bool,
 ///     #[builder(default = "foobar".to_string())]
 ///     custom_default_field: String,
+///     #[builder(list(item(type = i32)))]
+///     list_field: Vec<i32>,
 /// }
 /// ```
 ///
@@ -56,7 +74,8 @@ use syn::{
 ///     required_field: u32,
 ///     into_required_field: String,
 ///     standard_optional_field: bool,
-///     custom_default_field: i32,
+///     custom_default_field: String,
+///     list_field: Vec<i32>,
 /// }
 ///
 /// impl MyStruct {
@@ -94,6 +113,18 @@ use syn::{
 ///         }
 ///
 ///         pub fn custom_default_field(self, custom_default_field: String) -> Self {
+///             // ...
+///         }
+///
+///         pub fn push_list_field(self, list_field: i32) -> Self {
+///             // ...
+///         }
+///
+///         pub fn list_field(self, list_field: impl IntoIterator<Item = i32>) -> Self {
+///             // ...
+///         }
+///
+///         pub fn extend_list_field(self, list_field: impl IntoIterator<Item = i32>) -> Self {
 ///             // ...
 ///         }
 ///
@@ -241,8 +272,11 @@ fn stage(input: &DeriveInput, idx: usize, fields: &[ResolvedField<'_>]) -> Token
     let vis = stage_vis(&input.vis);
     let field = &fields[idx];
     let name = field.field.ident.as_ref().unwrap();
-    let ty = &field.setter_type;
-    let assign = &field.setter_assign;
+
+    let (type_, assign) = match &field.mode {
+        FieldMode::Normal { type_, assign } => (type_, assign),
+        _ => unreachable!(),
+    };
 
     let builder_name = stage_name(field);
 
@@ -264,7 +298,7 @@ fn stage(input: &DeriveInput, idx: usize, fields: &[ResolvedField<'_>]) -> Token
         };
 
     let struct_docs = format!(
-        "The `{name}` stage builder for [`{0}`](super::{0})",
+        "The `{name}` stage builder for [`{0}`](super::{0}).",
         input.ident
     );
     let setter_docs = format!("Sets the `{name}` field.");
@@ -278,7 +312,7 @@ fn stage(input: &DeriveInput, idx: usize, fields: &[ResolvedField<'_>]) -> Token
         impl #builder_name {
             #[doc = #setter_docs]
             #[inline]
-            pub fn #name(self, #name: #ty) -> #next_builder {
+            pub fn #name(self, #name: #type_) -> #next_builder {
                 #next_builder {
                     #(#existing_names: self.#existing_names,)*
                     #name: #assign,
@@ -338,7 +372,8 @@ fn final_stage(
     let names = fields.iter().map(|f| f.field.ident.as_ref().unwrap());
     let types = fields.iter().map(|f| &f.field.ty).collect::<Vec<_>>();
 
-    let struct_docs = format!("The final stage builder for [`{struct_name}`](super::{struct_name}");
+    let struct_docs =
+        format!("The final stage builder for [`{struct_name}`](super::{struct_name}).");
 
     let setters = fields
         .iter()
@@ -357,7 +392,7 @@ fn final_stage(
     quote! {
         #[doc = #struct_docs]
         #vis struct #builder_name {
-            #(#names: #types,)*
+            #(pub(super) #names: #types,)*
         }
 
         impl #builder_name {
@@ -371,17 +406,102 @@ fn final_stage(
 
 fn final_stage_setter(field: &ResolvedField<'_>) -> TokenStream {
     let name = field.field.ident.as_ref().unwrap();
-    let ty = &field.setter_type;
-    let assign = &field.setter_assign;
 
-    let docs = format!("Sets the `{name}` field.");
+    match &field.mode {
+        FieldMode::Normal { type_, assign } => {
+            let docs = format!("Sets the `{name}` field.");
+            quote! {
+                #[doc = #docs]
+                #[inline]
+                pub fn #name(mut self, #name: #type_) -> Self {
+                    self.#name = #assign;
+                    self
+                }
+            }
+        }
+        FieldMode::UnaryCollection { kind, item } => {
+            let push_setter = match kind {
+                UnaryKind::List => Ident::new("push", name.span()),
+                UnaryKind::Set => Ident::new("insert", name.span()),
+            };
 
-    quote! {
-        #[doc = #docs]
-        #[inline]
-        pub fn #name(mut self, #name: #ty) -> Self {
-            self.#name = #assign;
-            self
+            let push_docs = format!("Adds a value to the `{name}` field.");
+            let push_method = Ident::new(&format!("{push_setter}_{name}"), name.span());
+
+            let docs = format!("Sets the `{name}` field.");
+
+            let extend_docs = format!("Adds values to the `{name}` field.");
+            let extend_method = Ident::new(&format!("extend_{name}"), name.span());
+
+            quote! {
+                #[doc = #push_docs]
+                #[inline]
+                pub fn #push_method(mut self, #name: #item) -> Self {
+                    self.#name.#push_setter(#name);
+                    self
+                }
+
+                #[doc = #docs]
+                #[inline]
+                pub fn #name(
+                    mut self,
+                    #name: impl staged_builder::__private::IntoIterator<Item = #item>,
+                ) -> Self
+                {
+                    self.#name = staged_builder::__private::FromIterator::from_iter(#name);
+                    self
+                }
+
+                #[doc = #extend_docs]
+                #[inline]
+                pub fn #extend_method(
+                    mut self,
+                    #name: impl staged_builder::__private::IntoIterator<Item = #item>,
+                ) -> Self
+                {
+                    staged_builder::__private::Extend::extend(&mut self.#name, #name);
+                    self
+                }
+            }
+        }
+        FieldMode::Map { key, value } => {
+            let insert_docs = format!("Adds an entry to the `{name}` field.");
+            let insert_method = Ident::new(&format!("insert_{name}"), name.span());
+
+            let docs = format!("Sets the `{name}` field.");
+
+            let extend_docs = format!("Adds entries to the `{name}` field.");
+            let extend_method = Ident::new(&format!("extend_{name}"), name.span());
+
+            quote! {
+                #[doc = #insert_docs]
+                #[inline]
+                pub fn #insert_method(mut self, key: #key, value: #value) -> Self {
+                    self.#name.insert(key, value);
+                    self
+                }
+
+                #[doc = #docs]
+                #[inline]
+                pub fn #name(
+                    mut self,
+                    #name: impl staged_builder::__private::IntoIterator<Item = (#key, #value)>,
+                ) -> Self {
+                    self.#name = staged_builder::__private::FromIterator::from_iter(#name);
+                    self
+                }
+
+                #[doc = #extend_docs]
+                #[inline]
+                pub fn #extend_method(
+                    mut self,
+                    #name: impl staged_builder::__private::IntoIterator<Item = (#key, #value)>,
+                ) -> Self
+                {
+                    staged_builder::__private::Extend::extend(&mut self.#name, #name);
+                    self
+                }
+            }
         }
     }
 }
@@ -490,11 +610,30 @@ impl Parse for StructOverride {
     }
 }
 
+enum FieldMode {
+    Normal {
+        type_: TokenStream,
+        assign: TokenStream,
+    },
+    UnaryCollection {
+        kind: UnaryKind,
+        item: TokenStream,
+    },
+    Map {
+        key: TokenStream,
+        value: TokenStream,
+    },
+}
+
+enum UnaryKind {
+    List,
+    Set,
+}
+
 struct ResolvedField<'a> {
     field: &'a Field,
     default: Option<TokenStream>,
-    setter_type: TokenStream,
-    setter_assign: TokenStream,
+    mode: FieldMode,
 }
 
 impl<'a> ResolvedField<'a> {
@@ -505,8 +644,10 @@ impl<'a> ResolvedField<'a> {
         let mut resolved = ResolvedField {
             field,
             default: None,
-            setter_type: quote!(#ty),
-            setter_assign: quote!(#name),
+            mode: FieldMode::Normal {
+                type_: quote!(#ty),
+                assign: quote!(#name),
+            },
         };
 
         for attr in &field.attrs {
@@ -526,8 +667,20 @@ impl<'a> ResolvedField<'a> {
                         );
                     }
                     FieldOverride::Into => {
-                        resolved.setter_type = quote!(impl staged_builder::__private::Into<#ty>);
-                        resolved.setter_assign = quote!(#name.into());
+                        resolved.mode = FieldMode::Normal {
+                            type_: quote!(impl staged_builder::__private::Into<#ty>),
+                            assign: quote!(#name.into()),
+                        };
+                    }
+                    FieldOverride::UnaryCollection { kind, item } => {
+                        resolved.default =
+                            Some(quote!(staged_builder::__private::Default::default()));
+                        resolved.mode = FieldMode::UnaryCollection { kind, item };
+                    }
+                    FieldOverride::Map { key, value } => {
+                        resolved.default =
+                            Some(quote!(staged_builder::__private::Default::default()));
+                        resolved.mode = FieldMode::Map { key, value };
                     }
                 }
             }
@@ -538,8 +691,18 @@ impl<'a> ResolvedField<'a> {
 }
 
 enum FieldOverride {
-    Default { expr: Option<TokenStream> },
+    Default {
+        expr: Option<TokenStream>,
+    },
     Into,
+    UnaryCollection {
+        kind: UnaryKind,
+        item: TokenStream,
+    },
+    Map {
+        key: TokenStream,
+        value: TokenStream,
+    },
 }
 
 impl Parse for FieldOverride {
@@ -558,8 +721,135 @@ impl Parse for FieldOverride {
             Ok(FieldOverride::Default { expr })
         } else if name == "into" {
             Ok(FieldOverride::Into)
+        } else if name == "list" || name == "set" {
+            let content;
+            parenthesized!(content in input);
+
+            let mut item = None;
+            for override_ in content.parse_terminated::<_, Token![,]>(UnaryOverride::parse)? {
+                match override_ {
+                    UnaryOverride::Item { type_ } => {
+                        item = Some(type_);
+                    }
+                }
+            }
+
+            let kind = if name == "list" {
+                UnaryKind::List
+            } else {
+                UnaryKind::Set
+            };
+            let item =
+                item.ok_or_else(|| Error::new(name.span(), "missing `item` configuration"))?;
+            Ok(FieldOverride::UnaryCollection { kind, item })
+        } else if name == "map" {
+            let content;
+            parenthesized!(content in input);
+
+            let mut key = None;
+            let mut value = None;
+            for override_ in content.parse_terminated::<_, Token![,]>(BinaryOverride::parse)? {
+                match override_ {
+                    BinaryOverride::Key { type_ } => key = Some(type_),
+                    BinaryOverride::Value { type_ } => value = Some(type_),
+                }
+            }
+
+            let key = key.ok_or_else(|| Error::new(name.span(), "missing `key` configuration"))?;
+            let value =
+                value.ok_or_else(|| Error::new(name.span(), "missing `value` configuration"))?;
+
+            Ok(FieldOverride::Map { key, value })
         } else {
-            Err(Error::new(name.span(), "expected `default` or `into`"))
+            Err(Error::new(
+                name.span(),
+                "expected `default`, `into`, `list`, or `set`",
+            ))
+        }
+    }
+}
+
+enum UnaryOverride {
+    Item { type_: TokenStream },
+}
+
+impl Parse for UnaryOverride {
+    fn parse(input: ParseStream) -> Result<Self, Error> {
+        let name = input.parse::<Ident>()?;
+        if name == "item" {
+            let content;
+            parenthesized!(content in input);
+
+            let mut type_ = None;
+            for override_ in
+                content.parse_terminated::<_, Token![,]>(CollectionTypeOverride::parse)?
+            {
+                match override_ {
+                    CollectionTypeOverride::Type { type_: t } => type_ = Some(t),
+                }
+            }
+
+            let type_ =
+                type_.ok_or_else(|| Error::new(name.span(), "missing `type` configuration"))?;
+
+            Ok(UnaryOverride::Item { type_ })
+        } else {
+            Err(Error::new(name.span(), "expected `item`"))
+        }
+    }
+}
+
+enum CollectionTypeOverride {
+    Type { type_: TokenStream },
+}
+
+impl Parse for CollectionTypeOverride {
+    fn parse(input: ParseStream) -> Result<Self, Error> {
+        let name = input.call(Ident::parse_any)?;
+        if name == "type" {
+            input.parse::<Token![=]>()?;
+            let type_ = input.parse::<Type>()?;
+
+            Ok(CollectionTypeOverride::Type {
+                type_: type_.to_token_stream(),
+            })
+        } else {
+            Err(Error::new(name.span(), "expected `type`"))
+        }
+    }
+}
+
+enum BinaryOverride {
+    Key { type_: TokenStream },
+    Value { type_: TokenStream },
+}
+
+impl Parse for BinaryOverride {
+    fn parse(input: ParseStream) -> Result<Self, Error> {
+        let name = input.parse::<Ident>()?;
+        if name == "key" || name == "value" {
+            let content;
+            parenthesized!(content in input);
+
+            let mut type_ = None;
+            for override_ in
+                content.parse_terminated::<_, Token![,]>(CollectionTypeOverride::parse)?
+            {
+                match override_ {
+                    CollectionTypeOverride::Type { type_: t } => type_ = Some(t),
+                }
+            }
+
+            let type_ =
+                type_.ok_or_else(|| Error::new(name.span(), "missing `type` configuration"))?;
+
+            if name == "key" {
+                Ok(BinaryOverride::Key { type_ })
+            } else {
+                Ok(BinaryOverride::Value { type_ })
+            }
+        } else {
+            Err(Error::new(name.span(), "expected `key` or `value`"))
         }
     }
 }
