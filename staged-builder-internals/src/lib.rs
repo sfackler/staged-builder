@@ -32,6 +32,21 @@ use syn::{
 /// * `into` - Causes the setter method for the field to take `impl Into<FieldType>` rather than `FieldType` directly.
 /// * `default` - Causes the field to be considered optional. The [`Default`] trait is normally used to generate the
 ///     default field value. A custom default can be specified with `default = <expr>`, where `<expr>` is an expression.
+/// * `list` - Causes the field to be treated as a "list style" type. It will default to an empty collection, and three
+///     setter methods will be generated: `push_foo` to add a single value, `foo` to set the contents, and `extend_foo`
+///     to exend the collection with new values. The underlying type must have a `push` method, a [`FromIterator`]
+///     implementation, and an [`Extend`] implementation. The type of the item must be provided in the attribute:
+///     `#[builder(list(item(type = YourItemType)))]`.
+/// * `set` - Causes the field to be treated as a "set style" type. It will default to an empty collection, and three
+///     setter methods will be generated: `insert_foo` to add a single value, `foo` to set the contents, and
+///     `extend_foo` to exend the collection with new values. The underlying type must have an `insert` method, a
+///     [`FromIterator`] implementation, and an [`Extend`] implementation. The type of the item must be provided in the
+///     attribute: `#[builder(set(item(type = YourItemType)))]`.
+/// * `map` - Causes the field to be treated as a "map style" type. It will default to an empty collection, and three
+///     setter methods will be generated: `insert_foo` to add a single entry, `foo` to set the contents, and
+///     `extend_foo` to exend the collection with new entries. The underlying type must have an `insert` method, a
+///     [`FromIterator`] implementation, and an [`Extend`] implementation. The key and value types must be provided in
+///     the attribute: `#[builder(map(key(type = YourKeyType), value(type = YourValueType)))]`.
 ///
 /// # Example expansion
 ///
@@ -47,6 +62,8 @@ use syn::{
 ///     standard_optional_field: bool,
 ///     #[builder(default = "foobar".to_string())]
 ///     custom_default_field: String,
+///     #[builder(list(item(type = i32)))]
+///     list_field: Vec<i32>,
 /// }
 /// ```
 ///
@@ -57,7 +74,8 @@ use syn::{
 ///     required_field: u32,
 ///     into_required_field: String,
 ///     standard_optional_field: bool,
-///     custom_default_field: i32,
+///     custom_default_field: String,
+///     list_field: Vec<i32>,
 /// }
 ///
 /// impl MyStruct {
@@ -95,6 +113,18 @@ use syn::{
 ///         }
 ///
 ///         pub fn custom_default_field(self, custom_default_field: String) -> Self {
+///             // ...
+///         }
+///
+///         pub fn push_list_field(self, list_field: i32) -> Self {
+///             // ...
+///         }
+///
+///         pub fn list_field(self, list_field: impl IntoIterator<Item = i32>) -> Self {
+///             // ...
+///         }
+///
+///         pub fn extend_list_field(self, list_field: impl IntoIterator<Item = i32>) -> Self {
 ///             // ...
 ///         }
 ///
