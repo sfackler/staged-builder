@@ -95,3 +95,41 @@ fn collections() {
         .build();
     assert_eq!(actual, expected);
 }
+
+#[derive(PartialEq, Debug)]
+#[staged_builder]
+struct CollectionsInto {
+    #[builder(list(item(type = String, into)))]
+    list: Vec<String>,
+    #[builder(map(key(type = String, into), value(type = Option<i32>, into)))]
+    map: HashMap<String, Option<i32>>,
+}
+
+#[test]
+fn collections_into() {
+    let actual = CollectionsInto::builder()
+        .push_list("hi")
+        .push_list("there")
+        .insert_map("foo", 1)
+        .insert_map("bar", None)
+        .build();
+    let expected = CollectionsInto {
+        list: vec!["hi".to_string(), "there".to_string()],
+        map: HashMap::from([("foo".to_string(), Some(1)), ("bar".to_string(), None)]),
+    };
+    assert_eq!(actual, expected);
+
+    let actual = CollectionsInto::builder()
+        .list(["hi", "there"])
+        .map([("foo", Some(1)), ("bar", None)])
+        .build();
+    assert_eq!(actual, expected);
+
+    let actual = CollectionsInto::builder()
+        .push_list("hi")
+        .extend_list(["there"])
+        .insert_map("foo", 1)
+        .extend_map([("bar", None)])
+        .build();
+    assert_eq!(actual, expected);
+}

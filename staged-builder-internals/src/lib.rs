@@ -45,18 +45,25 @@ mod kw {
 /// * `list` - Causes the field to be treated as a "list style" type. It will default to an empty collection, and three
 ///     setter methods will be generated: `push_foo` to add a single value, `foo` to set the contents, and `extend_foo`
 ///     to exend the collection with new values. The underlying type must have a `push` method, a [`FromIterator`]
-///     implementation, and an [`Extend`] implementation. The type of the item must be provided in the attribute:
+///     implementation, and an [`Extend`] implementation. The item type must be configured in the attribute:
 ///     `#[builder(list(item(type = YourItemType)))]`.
 /// * `set` - Causes the field to be treated as a "set style" type. It will default to an empty collection, and three
 ///     setter methods will be generated: `insert_foo` to add a single value, `foo` to set the contents, and
 ///     `extend_foo` to exend the collection with new values. The underlying type must have an `insert` method, a
-///     [`FromIterator`] implementation, and an [`Extend`] implementation. The type of the item must be provided in the
+///     [`FromIterator`] implementation, and an [`Extend`] implementation. The item type must be configured in the
 ///     attribute: `#[builder(set(item(type = YourItemType)))]`.
 /// * `map` - Causes the field to be treated as a "map style" type. It will default to an empty collection, and three
 ///     setter methods will be generated: `insert_foo` to add a single entry, `foo` to set the contents, and
 ///     `extend_foo` to exend the collection with new entries. The underlying type must have an `insert` method, a
-///     [`FromIterator`] implementation, and an [`Extend`] implementation. The key and value types must be provided in
+///     [`FromIterator`] implementation, and an [`Extend`] implementation. The key and value types must be configured in
 ///     the attribute: `#[builder(map(key(type = YourKeyType), value(type = YourValueType)))]`.
+///
+/// # Collection type options
+///
+/// Options can be applied to the item types of collections as a comma-separated sequence:
+///
+/// * `type` - Indicates the type of the item in the collection.
+/// * `into` - Causes setter methods to take `impl<Into<ItemType>>` rather than `ItemType` directly.
 ///
 /// # Example expansion
 ///
@@ -430,6 +437,10 @@ fn final_stage_setter(field: &ResolvedField<'_>) -> TokenStream {
             }
         }
         FieldMode::UnaryCollection { kind, item } => {
+            let type_ = &item.type_;
+            let convert = item.convert(name);
+            let convert_iter = item.convert_iter(name);
+
             let push_setter = match kind {
                 UnaryKind::List => Ident::new("push", name.span()),
                 UnaryKind::Set => Ident::new("insert", name.span()),
@@ -446,8 +457,8 @@ fn final_stage_setter(field: &ResolvedField<'_>) -> TokenStream {
             quote! {
                 #[doc = #push_docs]
                 #[inline]
-                pub fn #push_method(mut self, #name: #item) -> Self {
-                    self.#name.#push_setter(#name);
+                pub fn #push_method(mut self, #name: #type_) -> Self {
+                    self.#name.#push_setter(#convert);
                     self
                 }
 
@@ -455,10 +466,10 @@ fn final_stage_setter(field: &ResolvedField<'_>) -> TokenStream {
                 #[inline]
                 pub fn #name(
                     mut self,
-                    #name: impl staged_builder::__private::IntoIterator<Item = #item>,
+                    #name: impl staged_builder::__private::IntoIterator<Item = #type_>,
                 ) -> Self
                 {
-                    self.#name = staged_builder::__private::FromIterator::from_iter(#name);
+                    self.#name = staged_builder::__private::FromIterator::from_iter(#convert_iter);
                     self
                 }
 
@@ -466,15 +477,34 @@ fn final_stage_setter(field: &ResolvedField<'_>) -> TokenStream {
                 #[inline]
                 pub fn #extend_method(
                     mut self,
-                    #name: impl staged_builder::__private::IntoIterator<Item = #item>,
+                    #name: impl staged_builder::__private::IntoIterator<Item = #type_>,
                 ) -> Self
                 {
-                    staged_builder::__private::Extend::extend(&mut self.#name, #name);
+                    staged_builder::__private::Extend::extend(&mut self.#name, #convert_iter);
                     self
                 }
             }
         }
         FieldMode::Map { key, value } => {
+            let key_name = Ident::new("key", Span::call_site());
+            let key_type = &key.type_;
+            let key_convert = key.convert(&key_name);
+
+            let value_name = Ident::new("value", Span::call_site());
+            let value_type = &value.type_;
+            let value_convert = value.convert(&value_name);
+
+            let iter_convert = if key.convert_fn.is_some() || value.convert_fn.is_some() {
+                quote! {
+                    staged_builder::__private::Iterator::map(
+                        staged_builder::__private::IntoIterator::into_iter(#name),
+                        |(#key_name, #value_name)| (#key_convert, #value_convert)
+                    )
+                }
+            } else {
+                quote!(#name)
+            };
+
             let insert_docs = format!("Adds an entry to the `{name}` field.");
             let insert_method = Ident::new(&format!("insert_{name}"), name.span());
 
@@ -486,8 +516,8 @@ fn final_stage_setter(field: &ResolvedField<'_>) -> TokenStream {
             quote! {
                 #[doc = #insert_docs]
                 #[inline]
-                pub fn #insert_method(mut self, key: #key, value: #value) -> Self {
-                    self.#name.insert(key, value);
+                pub fn #insert_method(mut self, #key_name: #key_type, #value_name: #value_type) -> Self {
+                    self.#name.insert(#key_convert, #value_convert);
                     self
                 }
 
@@ -495,9 +525,9 @@ fn final_stage_setter(field: &ResolvedField<'_>) -> TokenStream {
                 #[inline]
                 pub fn #name(
                     mut self,
-                    #name: impl staged_builder::__private::IntoIterator<Item = (#key, #value)>,
+                    #name: impl staged_builder::__private::IntoIterator<Item = (#key_type, #value_type)>,
                 ) -> Self {
-                    self.#name = staged_builder::__private::FromIterator::from_iter(#name);
+                    self.#name = staged_builder::__private::FromIterator::from_iter(#iter_convert);
                     self
                 }
 
@@ -505,10 +535,10 @@ fn final_stage_setter(field: &ResolvedField<'_>) -> TokenStream {
                 #[inline]
                 pub fn #extend_method(
                     mut self,
-                    #name: impl staged_builder::__private::IntoIterator<Item = (#key, #value)>,
+                    #name: impl staged_builder::__private::IntoIterator<Item = (#key_type, #value_type)>,
                 ) -> Self
                 {
-                    staged_builder::__private::Extend::extend(&mut self.#name, #name);
+                    staged_builder::__private::Extend::extend(&mut self.#name, #iter_convert);
                     self
                 }
             }
@@ -627,11 +657,11 @@ enum FieldMode {
     },
     UnaryCollection {
         kind: UnaryKind,
-        item: TokenStream,
+        item: CollectionParamConfig,
     },
     Map {
-        key: TokenStream,
-        value: TokenStream,
+        key: CollectionParamConfig,
+        value: CollectionParamConfig,
     },
 }
 
@@ -740,7 +770,7 @@ impl Parse for FieldOverride {
 }
 
 struct UnaryCollectionConfig {
-    item: TokenStream,
+    item: CollectionParamConfig,
 }
 
 impl Parse for UnaryCollectionConfig {
@@ -753,7 +783,7 @@ impl Parse for UnaryCollectionConfig {
         let mut item = None;
         for override_ in content.parse_terminated::<_, Token![,]>(UnaryOverride::parse)? {
             match override_ {
-                UnaryOverride::Item { type_ } => item = Some(type_),
+                UnaryOverride::Item(config) => item = Some(config),
             }
         }
 
@@ -763,17 +793,14 @@ impl Parse for UnaryCollectionConfig {
 }
 
 enum UnaryOverride {
-    Item { type_: TokenStream },
+    Item(CollectionParamConfig),
 }
 
 impl Parse for UnaryOverride {
     fn parse(input: ParseStream) -> Result<Self, Error> {
         let lookahead = input.lookahead1();
         if lookahead.peek(kw::item) {
-            let config = input.parse::<CollectionParamConfig>()?;
-            Ok(UnaryOverride::Item {
-                type_: config.type_,
-            })
+            Ok(UnaryOverride::Item(input.parse::<CollectionParamConfig>()?))
         } else {
             Err(lookahead.error())
         }
@@ -781,8 +808,8 @@ impl Parse for UnaryOverride {
 }
 
 struct BinaryCollectionConfig {
-    key: TokenStream,
-    value: TokenStream,
+    key: CollectionParamConfig,
+    value: CollectionParamConfig,
 }
 
 impl Parse for BinaryCollectionConfig {
@@ -796,8 +823,8 @@ impl Parse for BinaryCollectionConfig {
         let mut value = None;
         for override_ in content.parse_terminated::<_, Token![,]>(BinaryOverride::parse)? {
             match override_ {
-                BinaryOverride::Key { type_ } => key = Some(type_),
-                BinaryOverride::Value { type_ } => value = Some(type_),
+                BinaryOverride::Key(config) => key = Some(config),
+                BinaryOverride::Value(config) => value = Some(config),
             }
         }
 
@@ -809,23 +836,19 @@ impl Parse for BinaryCollectionConfig {
 }
 
 enum BinaryOverride {
-    Key { type_: TokenStream },
-    Value { type_: TokenStream },
+    Key(CollectionParamConfig),
+    Value(CollectionParamConfig),
 }
 
 impl Parse for BinaryOverride {
     fn parse(input: ParseStream) -> Result<Self, Error> {
         let lookahead = input.lookahead1();
         if lookahead.peek(kw::key) {
-            let config = input.parse::<CollectionParamConfig>()?;
-            Ok(BinaryOverride::Key {
-                type_: config.type_,
-            })
+            Ok(BinaryOverride::Key(input.parse::<CollectionParamConfig>()?))
         } else if lookahead.peek(kw::value) {
-            let config = input.parse::<CollectionParamConfig>()?;
-            Ok(BinaryOverride::Value {
-                type_: config.type_,
-            })
+            Ok(BinaryOverride::Value(
+                input.parse::<CollectionParamConfig>()?,
+            ))
         } else {
             Err(lookahead.error())
         }
@@ -863,6 +886,28 @@ impl Parse for IntoConfig {
 
 struct CollectionParamConfig {
     type_: TokenStream,
+    convert_fn: Option<TokenStream>,
+}
+
+impl CollectionParamConfig {
+    fn convert(&self, name: &Ident) -> TokenStream {
+        match &self.convert_fn {
+            Some(convert_fn) => quote!(#convert_fn(#name)),
+            None => quote!(#name),
+        }
+    }
+
+    fn convert_iter(&self, name: &Ident) -> TokenStream {
+        match &self.convert_fn {
+            Some(convert_fn) => quote! {
+                staged_builder::__private::Iterator::map(
+                    staged_builder::__private::IntoIterator::into_iter(#name),
+                    #convert_fn,
+                )
+            },
+            None => quote!(#name),
+        }
+    }
 }
 
 impl Parse for CollectionParamConfig {
@@ -873,20 +918,30 @@ impl Parse for CollectionParamConfig {
         parenthesized!(content in input);
 
         let mut type_ = None;
+        let mut into = false;
         for override_ in content.parse_terminated::<_, Token![,]>(CollectionTypeOverride::parse)? {
             match override_ {
                 CollectionTypeOverride::Type(type_config) => type_ = Some(type_config.type_),
+                CollectionTypeOverride::Into(_) => into = true,
             }
         }
 
-        let type_ = type_.ok_or_else(|| Error::new(name.span(), "missing `type` configuration"))?;
+        let mut type_ =
+            type_.ok_or_else(|| Error::new(name.span(), "missing `type` configuration"))?;
+        let mut convert_fn = None;
 
-        Ok(CollectionParamConfig { type_ })
+        if into {
+            type_ = quote!(impl staged_builder::__private::Into<#type_>);
+            convert_fn = Some(quote!(staged_builder::__private::Into::into));
+        }
+
+        Ok(CollectionParamConfig { type_, convert_fn })
     }
 }
 
 enum CollectionTypeOverride {
     Type(TypeConfig),
+    Into(IntoConfig),
 }
 
 impl Parse for CollectionTypeOverride {
@@ -894,6 +949,8 @@ impl Parse for CollectionTypeOverride {
         let lookahead = input.lookahead1();
         if lookahead.peek(Token![type]) {
             Ok(CollectionTypeOverride::Type(input.parse()?))
+        } else if lookahead.peek(kw::into) {
+            Ok(CollectionTypeOverride::Into(input.parse()?))
         } else {
             Err(lookahead.error())
         }
