@@ -41,7 +41,7 @@ pub use staged_builder_internals::staged_builder;
 pub mod __private {
     pub use core::convert::Into;
     pub use core::default::Default;
-    pub use core::iter::{Extend, FromIterator, IntoIterator};
+    pub use core::iter::{Extend, FromIterator, IntoIterator, Iterator};
     pub use core::result::Result;
 }
 
