@@ -1,13 +1,23 @@
 use heck::{ToSnakeCase, ToUpperCamelCase};
 use proc_macro2::{Span, TokenStream};
 use quote::{quote, ToTokens};
-use syn::ext::IdentExt;
 use syn::parse::{Parse, ParseStream};
 use syn::spanned::Spanned;
 use syn::{
     parenthesized, parse_macro_input, Attribute, Data, DeriveInput, Error, Expr, Field, Fields,
     FieldsNamed, Ident, Token, Type, Visibility,
 };
+
+mod kw {
+    syn::custom_keyword!(into);
+    syn::custom_keyword!(default);
+    syn::custom_keyword!(list);
+    syn::custom_keyword!(set);
+    syn::custom_keyword!(map);
+    syn::custom_keyword!(item);
+    syn::custom_keyword!(key);
+    syn::custom_keyword!(value);
+}
 
 /// Creates a staged builder interface for structs.
 ///
@@ -661,26 +671,30 @@ impl<'a> ResolvedField<'a> {
 
             for override_ in overrides {
                 match override_ {
-                    FieldOverride::Default { expr } => {
-                        resolved.default = Some(
-                            expr.unwrap_or(quote!(staged_builder::__private::Default::default())),
-                        );
+                    FieldOverride::Default(config) => {
+                        resolved.default = Some(config.initializer);
                     }
-                    FieldOverride::Into => {
+                    FieldOverride::Into(_) => {
                         resolved.mode = FieldMode::Normal {
                             type_: quote!(impl staged_builder::__private::Into<#ty>),
                             assign: quote!(#name.into()),
                         };
                     }
-                    FieldOverride::UnaryCollection { kind, item } => {
+                    FieldOverride::UnaryCollection { kind, config } => {
                         resolved.default =
                             Some(quote!(staged_builder::__private::Default::default()));
-                        resolved.mode = FieldMode::UnaryCollection { kind, item };
+                        resolved.mode = FieldMode::UnaryCollection {
+                            kind,
+                            item: config.item,
+                        };
                     }
-                    FieldOverride::Map { key, value } => {
+                    FieldOverride::Map(config) => {
                         resolved.default =
                             Some(quote!(staged_builder::__private::Default::default()));
-                        resolved.mode = FieldMode::Map { key, value };
+                        resolved.mode = FieldMode::Map {
+                            key: config.key,
+                            value: config.value,
+                        };
                     }
                 }
             }
@@ -691,81 +705,60 @@ impl<'a> ResolvedField<'a> {
 }
 
 enum FieldOverride {
-    Default {
-        expr: Option<TokenStream>,
-    },
-    Into,
+    Default(DefaultConfig),
+    Into(IntoConfig),
     UnaryCollection {
         kind: UnaryKind,
-        item: TokenStream,
+        config: UnaryCollectionConfig,
     },
-    Map {
-        key: TokenStream,
-        value: TokenStream,
-    },
+    Map(BinaryCollectionConfig),
 }
 
 impl Parse for FieldOverride {
     fn parse(input: ParseStream) -> Result<Self, Error> {
-        let name = input.parse::<Ident>()?;
-        if name == "default" {
-            let expr = if input.peek(Token![=]) {
-                input.parse::<Token![=]>()?;
-                let expr = input.parse::<Expr>()?;
-
-                Some(expr.to_token_stream())
-            } else {
-                None
-            };
-
-            Ok(FieldOverride::Default { expr })
-        } else if name == "into" {
-            Ok(FieldOverride::Into)
-        } else if name == "list" || name == "set" {
-            let content;
-            parenthesized!(content in input);
-
-            let mut item = None;
-            for override_ in content.parse_terminated::<_, Token![,]>(UnaryOverride::parse)? {
-                match override_ {
-                    UnaryOverride::Item { type_ } => {
-                        item = Some(type_);
-                    }
-                }
-            }
-
-            let kind = if name == "list" {
-                UnaryKind::List
-            } else {
-                UnaryKind::Set
-            };
-            let item =
-                item.ok_or_else(|| Error::new(name.span(), "missing `item` configuration"))?;
-            Ok(FieldOverride::UnaryCollection { kind, item })
-        } else if name == "map" {
-            let content;
-            parenthesized!(content in input);
-
-            let mut key = None;
-            let mut value = None;
-            for override_ in content.parse_terminated::<_, Token![,]>(BinaryOverride::parse)? {
-                match override_ {
-                    BinaryOverride::Key { type_ } => key = Some(type_),
-                    BinaryOverride::Value { type_ } => value = Some(type_),
-                }
-            }
-
-            let key = key.ok_or_else(|| Error::new(name.span(), "missing `key` configuration"))?;
-            let value =
-                value.ok_or_else(|| Error::new(name.span(), "missing `value` configuration"))?;
-
-            Ok(FieldOverride::Map { key, value })
+        let lookahead = input.lookahead1();
+        if lookahead.peek(kw::default) {
+            Ok(FieldOverride::Default(input.parse()?))
+        } else if lookahead.peek(kw::into) {
+            Ok(FieldOverride::Into(input.parse()?))
+        } else if lookahead.peek(kw::list) {
+            Ok(FieldOverride::UnaryCollection {
+                kind: UnaryKind::List,
+                config: input.parse()?,
+            })
+        } else if lookahead.peek(kw::set) {
+            Ok(FieldOverride::UnaryCollection {
+                kind: UnaryKind::Set,
+                config: input.parse()?,
+            })
+        } else if lookahead.peek(kw::map) {
+            Ok(FieldOverride::Map(input.parse()?))
         } else {
-            Err(Error::new(
-                name.span(),
-                "expected `default`, `into`, `list`, or `set`",
-            ))
+            Err(lookahead.error())
         }
+    }
+}
+
+struct UnaryCollectionConfig {
+    item: TokenStream,
+}
+
+impl Parse for UnaryCollectionConfig {
+    fn parse(input: ParseStream) -> Result<Self, Error> {
+        let name = input.parse::<Ident>()?;
+
+        let content;
+        parenthesized!(content in input);
+
+        let mut item = None;
+        for override_ in content.parse_terminated::<_, Token![,]>(UnaryOverride::parse)? {
+            match override_ {
+                UnaryOverride::Item { type_ } => item = Some(type_),
+            }
+        }
+
+        let item = item.ok_or_else(|| Error::new(name.span(), "missing `item` configuration"))?;
+        Ok(UnaryCollectionConfig { item })
     }
 }
 
@@ -775,47 +768,43 @@ enum UnaryOverride {
 
 impl Parse for UnaryOverride {
     fn parse(input: ParseStream) -> Result<Self, Error> {
-        let name = input.parse::<Ident>()?;
-        if name == "item" {
-            let content;
-            parenthesized!(content in input);
-
-            let mut type_ = None;
-            for override_ in
-                content.parse_terminated::<_, Token![,]>(CollectionTypeOverride::parse)?
-            {
-                match override_ {
-                    CollectionTypeOverride::Type { type_: t } => type_ = Some(t),
-                }
-            }
-
-            let type_ =
-                type_.ok_or_else(|| Error::new(name.span(), "missing `type` configuration"))?;
-
-            Ok(UnaryOverride::Item { type_ })
+        let lookahead = input.lookahead1();
+        if lookahead.peek(kw::item) {
+            let config = input.parse::<CollectionParamConfig>()?;
+            Ok(UnaryOverride::Item {
+                type_: config.type_,
+            })
         } else {
-            Err(Error::new(name.span(), "expected `item`"))
+            Err(lookahead.error())
         }
     }
 }
 
-enum CollectionTypeOverride {
-    Type { type_: TokenStream },
+struct BinaryCollectionConfig {
+    key: TokenStream,
+    value: TokenStream,
 }
 
-impl Parse for CollectionTypeOverride {
+impl Parse for BinaryCollectionConfig {
     fn parse(input: ParseStream) -> Result<Self, Error> {
-        let name = input.call(Ident::parse_any)?;
-        if name == "type" {
-            input.parse::<Token![=]>()?;
-            let type_ = input.parse::<Type>()?;
+        let name = input.parse::<Ident>()?;
 
-            Ok(CollectionTypeOverride::Type {
-                type_: type_.to_token_stream(),
-            })
-        } else {
-            Err(Error::new(name.span(), "expected `type`"))
+        let content;
+        parenthesized!(content in input);
+
+        let mut key = None;
+        let mut value = None;
+        for override_ in content.parse_terminated::<_, Token![,]>(BinaryOverride::parse)? {
+            match override_ {
+                BinaryOverride::Key { type_ } => key = Some(type_),
+                BinaryOverride::Value { type_ } => value = Some(type_),
+            }
         }
+
+        let key = key.ok_or_else(|| Error::new(name.span(), "missing `key` configuration"))?;
+        let value =
+            value.ok_or_else(|| Error::new(name.span(), "missing `value` configuration"))?;
+        Ok(BinaryCollectionConfig { key, value })
     }
 }
 
@@ -826,30 +815,103 @@ enum BinaryOverride {
 
 impl Parse for BinaryOverride {
     fn parse(input: ParseStream) -> Result<Self, Error> {
-        let name = input.parse::<Ident>()?;
-        if name == "key" || name == "value" {
-            let content;
-            parenthesized!(content in input);
-
-            let mut type_ = None;
-            for override_ in
-                content.parse_terminated::<_, Token![,]>(CollectionTypeOverride::parse)?
-            {
-                match override_ {
-                    CollectionTypeOverride::Type { type_: t } => type_ = Some(t),
-                }
-            }
-
-            let type_ =
-                type_.ok_or_else(|| Error::new(name.span(), "missing `type` configuration"))?;
-
-            if name == "key" {
-                Ok(BinaryOverride::Key { type_ })
-            } else {
-                Ok(BinaryOverride::Value { type_ })
-            }
+        let lookahead = input.lookahead1();
+        if lookahead.peek(kw::key) {
+            let config = input.parse::<CollectionParamConfig>()?;
+            Ok(BinaryOverride::Key {
+                type_: config.type_,
+            })
+        } else if lookahead.peek(kw::value) {
+            let config = input.parse::<CollectionParamConfig>()?;
+            Ok(BinaryOverride::Value {
+                type_: config.type_,
+            })
         } else {
-            Err(Error::new(name.span(), "expected `key` or `value`"))
+            Err(lookahead.error())
         }
+    }
+}
+
+struct DefaultConfig {
+    initializer: TokenStream,
+}
+
+impl Parse for DefaultConfig {
+    fn parse(input: ParseStream) -> Result<Self, Error> {
+        input.parse::<kw::default>()?;
+        let initializer = if input.peek(Token![=]) {
+            input.parse::<Token![=]>()?;
+            let expr = input.parse::<Expr>()?;
+
+            expr.to_token_stream()
+        } else {
+            quote!(staged_builder::__private::Default::default())
+        };
+
+        Ok(DefaultConfig { initializer })
+    }
+}
+
+struct IntoConfig;
+
+impl Parse for IntoConfig {
+    fn parse(input: ParseStream) -> Result<Self, Error> {
+        input.parse::<kw::into>()?;
+        Ok(IntoConfig)
+    }
+}
+
+struct CollectionParamConfig {
+    type_: TokenStream,
+}
+
+impl Parse for CollectionParamConfig {
+    fn parse(input: ParseStream) -> Result<Self, Error> {
+        let name = input.parse::<Ident>()?;
+
+        let content;
+        parenthesized!(content in input);
+
+        let mut type_ = None;
+        for override_ in content.parse_terminated::<_, Token![,]>(CollectionTypeOverride::parse)? {
+            match override_ {
+                CollectionTypeOverride::Type(type_config) => type_ = Some(type_config.type_),
+            }
+        }
+
+        let type_ = type_.ok_or_else(|| Error::new(name.span(), "missing `type` configuration"))?;
+
+        Ok(CollectionParamConfig { type_ })
+    }
+}
+
+enum CollectionTypeOverride {
+    Type(TypeConfig),
+}
+
+impl Parse for CollectionTypeOverride {
+    fn parse(input: ParseStream) -> Result<Self, Error> {
+        let lookahead = input.lookahead1();
+        if lookahead.peek(Token![type]) {
+            Ok(CollectionTypeOverride::Type(input.parse()?))
+        } else {
+            Err(lookahead.error())
+        }
+    }
+}
+
+struct TypeConfig {
+    type_: TokenStream,
+}
+
+impl Parse for TypeConfig {
+    fn parse(input: ParseStream) -> Result<Self, Error> {
+        input.parse::<Token![type]>()?;
+        input.parse::<Token![=]>()?;
+        let type_ = input.parse::<Type>()?;
+
+        Ok(TypeConfig {
+            type_: type_.to_token_stream(),
+        })
     }
 }
