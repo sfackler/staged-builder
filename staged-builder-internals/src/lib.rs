@@ -10,6 +10,8 @@ use syn::{
 
 mod kw {
     syn::custom_keyword!(into);
+    syn::custom_keyword!(custom);
+    syn::custom_keyword!(convert);
     syn::custom_keyword!(default);
     syn::custom_keyword!(list);
     syn::custom_keyword!(set);
@@ -39,9 +41,13 @@ mod kw {
 ///
 /// Options can be applied to individual fields via the `#[builder(...)]` attribute as a comma-separated sequence:
 ///
-/// * `into` - Causes the setter method for the field to take `impl Into<FieldType>` rather than `FieldType` directly.
 /// * `default` - Causes the field to be considered optional. The [`Default`] trait is normally used to generate the
 ///     default field value. A custom default can be specified with `default = <expr>`, where `<expr>` is an expression.
+/// * `into` - Causes the setter method for the field to take `impl Into<FieldType>` rather than `FieldType` directly.
+/// * `custom` - Causes the setter method to perform an arbitrary conversion for the field. The option expects a `type`
+///     which will be used as the argument type in the setter, and a `convert` callable expression which will be invoked
+///     by the setter. For example, the annotation `#[builder(into)]` on a field of type `T` is equivalent to the
+///     annotation `#[builder(custom(type = impl Into<T>, convert = Into::into))]`.
 /// * `list` - Causes the field to be treated as a "list style" type. It will default to an empty collection, and three
 ///     setter methods will be generated: `push_foo` to add a single value, `foo` to set the contents, and `extend_foo`
 ///     to exend the collection with new values. The underlying type must have a `push` method, a [`FromIterator`]
@@ -62,8 +68,9 @@ mod kw {
 ///
 /// Options can be applied to the item types of collections as a comma-separated sequence:
 ///
-/// * `type` - Indicates the type of the item in the collection.
+/// * `type` - Indicates the type of the item in the collection. Required unless using `custom`.
 /// * `into` - Causes setter methods to take `impl<Into<ItemType>>` rather than `ItemType` directly.
+/// * `custom` - Causes the setter methods to perform an arbitrary conversion for the field.
 ///
 /// # Example expansion
 ///
@@ -710,6 +717,13 @@ impl<'a> ResolvedField<'a> {
                             assign: quote!(#name.into()),
                         };
                     }
+                    FieldOverride::Custom(config) => {
+                        let convert = config.convert.convert;
+                        resolved.mode = FieldMode::Normal {
+                            type_: config.type_.type_,
+                            assign: quote!(#convert(#name)),
+                        }
+                    }
                     FieldOverride::UnaryCollection { kind, config } => {
                         resolved.default =
                             Some(quote!(staged_builder::__private::Default::default()));
@@ -737,6 +751,7 @@ impl<'a> ResolvedField<'a> {
 enum FieldOverride {
     Default(DefaultConfig),
     Into(IntoConfig),
+    Custom(CustomConfig),
     UnaryCollection {
         kind: UnaryKind,
         config: UnaryCollectionConfig,
@@ -751,6 +766,8 @@ impl Parse for FieldOverride {
             Ok(FieldOverride::Default(input.parse()?))
         } else if lookahead.peek(kw::into) {
             Ok(FieldOverride::Into(input.parse()?))
+        } else if lookahead.peek(kw::custom) {
+            Ok(FieldOverride::Custom(input.parse()?))
         } else if lookahead.peek(kw::list) {
             Ok(FieldOverride::UnaryCollection {
                 kind: UnaryKind::List,
@@ -884,6 +901,69 @@ impl Parse for IntoConfig {
     }
 }
 
+struct CustomConfig {
+    type_: TypeConfig,
+    convert: ConvertConfig,
+}
+
+impl Parse for CustomConfig {
+    fn parse(input: ParseStream) -> Result<Self, Error> {
+        let name = input.parse::<kw::custom>()?;
+
+        let content;
+        parenthesized!(content in input);
+
+        let mut type_ = None;
+        let mut convert = None;
+        for override_ in content.parse_terminated::<_, Token![,]>(CustomOverride::parse)? {
+            match override_ {
+                CustomOverride::Type(config) => type_ = Some(config),
+                CustomOverride::Convert(config) => convert = Some(config),
+            }
+        }
+
+        let type_ = type_.ok_or_else(|| Error::new(name.span(), "missing `type` configuration"))?;
+        let convert =
+            convert.ok_or_else(|| Error::new(name.span(), "missing `convert` configuration"))?;
+
+        Ok(CustomConfig { type_, convert })
+    }
+}
+
+enum CustomOverride {
+    Type(TypeConfig),
+    Convert(ConvertConfig),
+}
+
+impl Parse for CustomOverride {
+    fn parse(input: ParseStream) -> Result<Self, Error> {
+        let lookahead = input.lookahead1();
+        if lookahead.peek(Token![type]) {
+            Ok(CustomOverride::Type(input.parse()?))
+        } else if lookahead.peek(kw::convert) {
+            Ok(CustomOverride::Convert(input.parse()?))
+        } else {
+            Err(lookahead.error())
+        }
+    }
+}
+
+struct ConvertConfig {
+    convert: TokenStream,
+}
+
+impl Parse for ConvertConfig {
+    fn parse(input: ParseStream) -> Result<Self, Error> {
+        input.parse::<kw::convert>()?;
+        input.parse::<Token![=]>()?;
+        let convert = input.parse::<Expr>()?;
+
+        Ok(ConvertConfig {
+            convert: convert.to_token_stream(),
+        })
+    }
+}
+
 struct CollectionParamConfig {
     type_: TokenStream,
     convert_fn: Option<TokenStream>,
@@ -923,6 +1003,12 @@ impl Parse for CollectionParamConfig {
             match override_ {
                 CollectionTypeOverride::Type(type_config) => type_ = Some(type_config.type_),
                 CollectionTypeOverride::Into(_) => into = true,
+                CollectionTypeOverride::Custom(config) => {
+                    return Ok(CollectionParamConfig {
+                        type_: config.type_.type_,
+                        convert_fn: Some(config.convert.convert),
+                    })
+                }
             }
         }
 
@@ -942,6 +1028,7 @@ impl Parse for CollectionParamConfig {
 enum CollectionTypeOverride {
     Type(TypeConfig),
     Into(IntoConfig),
+    Custom(CustomConfig),
 }
 
 impl Parse for CollectionTypeOverride {
@@ -951,6 +1038,8 @@ impl Parse for CollectionTypeOverride {
             Ok(CollectionTypeOverride::Type(input.parse()?))
         } else if lookahead.peek(kw::into) {
             Ok(CollectionTypeOverride::Into(input.parse()?))
+        } else if lookahead.peek(kw::custom) {
+            Ok(CollectionTypeOverride::Custom(input.parse()?))
         } else {
             Err(lookahead.error())
         }
