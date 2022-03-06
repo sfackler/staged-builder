@@ -1,5 +1,6 @@
 use staged_builder::{staged_builder, Validate};
 use std::collections::{HashMap, HashSet};
+use std::fmt::Display;
 
 #[derive(PartialEq, Debug)]
 #[staged_builder]
@@ -131,5 +132,28 @@ fn collections_into() {
         .insert_map("foo", 1)
         .extend_map([("bar", None)])
         .build();
+    assert_eq!(actual, expected);
+}
+
+#[derive(PartialEq, Debug)]
+#[staged_builder]
+struct Custom {
+    #[builder(custom(type = impl Display, convert = to_string))]
+    string: String,
+    #[builder(list(item(custom(type = impl Display, convert = to_string))))]
+    list: Vec<String>,
+}
+
+fn to_string(value: impl Display) -> String {
+    value.to_string()
+}
+
+#[test]
+fn custom() {
+    let actual = Custom::builder().string(42).push_list(true).build();
+    let expected = Custom {
+        string: "42".to_string(),
+        list: vec!["true".to_string()],
+    };
     assert_eq!(actual, expected);
 }
