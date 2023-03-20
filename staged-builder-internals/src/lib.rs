@@ -349,7 +349,7 @@ fn stage(input: &DeriveInput, idx: usize, fields: &[ResolvedField<'_>]) -> Token
 
 fn stage_vis(vis: &Visibility) -> TokenStream {
     match vis {
-        Visibility::Public(_) | Visibility::Crate(_) => quote!(#vis),
+        Visibility::Public(_) => quote!(#vis),
         Visibility::Restricted(restricted) => {
             let path = &restricted.path;
             if path.leading_colon.is_some()
@@ -623,12 +623,12 @@ impl StructOverrides {
         let mut overrides = StructOverrides { validate: false };
 
         for attr in attrs {
-            if !attr.path.is_ident("builder") {
+            if !attr.meta.path().is_ident("builder") {
                 continue;
             }
 
             let parsed = attr.parse_args_with(|p: ParseStream<'_>| {
-                p.parse_terminated::<_, Token![,]>(StructOverride::parse)
+                p.parse_terminated(StructOverride::parse, Token![,])
             })?;
 
             for override_ in parsed {
@@ -698,12 +698,12 @@ impl<'a> ResolvedField<'a> {
         };
 
         for attr in &field.attrs {
-            if !attr.path.is_ident("builder") {
+            if !attr.meta.path().is_ident("builder") {
                 continue;
             }
 
             let overrides = attr.parse_args_with(|p: ParseStream<'_>| {
-                p.parse_terminated::<_, Token![,]>(FieldOverride::parse)
+                p.parse_terminated(FieldOverride::parse, Token![,])
             })?;
 
             for override_ in overrides {
@@ -798,7 +798,7 @@ impl Parse for UnaryCollectionConfig {
         parenthesized!(content in input);
 
         let mut item = None;
-        for override_ in content.parse_terminated::<_, Token![,]>(UnaryOverride::parse)? {
+        for override_ in content.parse_terminated(UnaryOverride::parse, Token![,])? {
             match override_ {
                 UnaryOverride::Item(config) => item = Some(config),
             }
@@ -838,7 +838,7 @@ impl Parse for BinaryCollectionConfig {
 
         let mut key = None;
         let mut value = None;
-        for override_ in content.parse_terminated::<_, Token![,]>(BinaryOverride::parse)? {
+        for override_ in content.parse_terminated(BinaryOverride::parse, Token![,])? {
             match override_ {
                 BinaryOverride::Key(config) => key = Some(config),
                 BinaryOverride::Value(config) => value = Some(config),
@@ -915,7 +915,7 @@ impl Parse for CustomConfig {
 
         let mut type_ = None;
         let mut convert = None;
-        for override_ in content.parse_terminated::<_, Token![,]>(CustomOverride::parse)? {
+        for override_ in content.parse_terminated(CustomOverride::parse, Token![,])? {
             match override_ {
                 CustomOverride::Type(config) => type_ = Some(config),
                 CustomOverride::Convert(config) => convert = Some(config),
@@ -999,7 +999,7 @@ impl Parse for CollectionParamConfig {
 
         let mut type_ = None;
         let mut into = false;
-        for override_ in content.parse_terminated::<_, Token![,]>(CollectionTypeOverride::parse)? {
+        for override_ in content.parse_terminated(CollectionTypeOverride::parse, Token![,])? {
             match override_ {
                 CollectionTypeOverride::Type(type_config) => type_ = Some(type_config.type_),
                 CollectionTypeOverride::Into(_) => into = true,
