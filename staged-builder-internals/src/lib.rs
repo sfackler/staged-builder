@@ -108,7 +108,7 @@ mod kw {
 ///     }
 /// }
 ///
-/// pub struct my_struct {
+/// pub mod my_struct {
 ///     pub struct BuilderRequiredFieldStage {}
 ///
 ///     impl BuilderRequiredFieldStage {
