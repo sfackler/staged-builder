@@ -103,35 +103,35 @@ mod kw {
 /// }
 ///
 /// impl MyStruct {
-///     pub fn builder() -> my_struct::BuilderRequiredFieldStage {
+///     pub fn builder() -> my_struct::Builder<my_struct::RequiredFieldStage> {
 ///         // ...
 ///     }
 /// }
 ///
 /// pub mod my_struct {
-///     pub struct BuilderRequiredFieldStage {}
+///     pub struct Builder<T> {
+///         // ...
+///     }
 ///
-///     impl BuilderRequiredFieldStage {
-///         pub fn required_field(self, required_field: u32) -> BuilderIntoRequiredFieldStage {
+///     impl Default for Builder<RequiredFieldStage> {
+///         fn default() -> Self {
 ///             // ...
 ///         }
 ///     }
 ///
-///     pub struct BuilderIntoRequiredFieldStage {
-///         // ...
-///     }
-///
-///     impl BuilderIntoRequiredFieldStage {
-///         pub fn into_required_field(self, into_required_field: impl Into<String>) -> BuilderFinal {
+///     impl Builder<RequiredFieldStage> {
+///         pub fn required_field(self, required_field: u32) -> Builder<IntoRequiredFieldStage> {
 ///             // ...
 ///         }
 ///     }
 ///
-///     pub struct BuilderFinal {
-///         // ...
+///     impl Builder<IntoRequiredFieldStage> {
+///         pub fn into_required_field(self, into_required_field: impl Into<String>) -> Builder<FinalStage> {
+///             // ...
+///         }
 ///     }
 ///
-///     impl BuilderFinal {
+///     impl Builder<FinalStage> {
 ///         pub fn standard_optional_field(self, standard_optional_field: bool) -> Self {
 ///             // ...
 ///         }
@@ -155,6 +155,18 @@ mod kw {
 ///         pub fn build(self) -> super::MyStruct {
 ///             // ...
 ///         }
+///     }
+///
+///     pub struct RequiredFieldStage {
+///         // ...
+///     }
+///
+///     pub struct IntoRequiredFieldStage {
+///         // ...
+///     }
+///
+///     pub struct FinalStage {
+///         // ...
 ///     }
 /// }
 /// ```
@@ -231,6 +243,8 @@ fn expand(input: DeriveInput) -> Result<TokenStream, Error> {
 
     let module_docs = format!("Builder types for [`{}`].", &input.ident);
 
+    let builder = builder(&input);
+    let default = default_impl(&fields);
     let stages = fields
         .iter()
         .enumerate()
@@ -245,6 +259,8 @@ fn expand(input: DeriveInput) -> Result<TokenStream, Error> {
         #vis mod #module_name {
             use super::*;
 
+            #builder
+            #default
             #(#stages)*
             #final_stage
         }
@@ -263,19 +279,48 @@ fn builder_impl(input: &DeriveInput, fields: &[ResolvedField<'_>]) -> TokenStrea
 
     let module_name = module_name(input);
 
-    let (builder_name, fields) = match fields.iter().find(|f| f.default.is_none()) {
-        Some(f) => (stage_name(f), quote!()),
-        None => (final_name(), default_field_initializers(fields)),
-    };
+    let builder_name = initial_stage(fields).unwrap_or_else(final_name);
 
     quote! {
         impl #name {
             /// Returns a new builder.
             #[inline]
-            #vis fn builder() -> #module_name::#builder_name {
-                #module_name::#builder_name {
-                    #fields
-                }
+            #vis fn builder() -> #module_name::Builder<#module_name::#builder_name> {
+                ::staged_builder::__private::Default::default()
+            }
+        }
+    }
+}
+
+fn initial_stage(fields: &[ResolvedField<'_>]) -> Option<Ident> {
+    fields
+        .iter()
+        .find(|f| f.default.is_none())
+        .map(|f| stage_name(f))
+}
+
+fn builder(input: &DeriveInput) -> TokenStream {
+    let docs = format!("A builder for [{0}](super::{0}).", input.ident);
+
+    quote! {
+        #[doc = #docs]
+        pub struct Builder<T>(T);
+    }
+}
+
+fn default_impl(fields: &[ResolvedField<'_>]) -> TokenStream {
+    let (stage, initializers) = match initial_stage(fields) {
+        Some(stage) => (stage, quote!()),
+        None => (final_name(), default_field_initializers(fields)),
+    };
+
+    quote! {
+        impl ::staged_builder::__private::Default for Builder<#stage> {
+            #[inline]
+            fn default() -> Self {
+                Builder(#stage {
+                    #initializers
+                })
             }
         }
     }
@@ -321,10 +366,7 @@ fn stage(input: &DeriveInput, idx: usize, fields: &[ResolvedField<'_>]) -> Token
             None => (final_name(), default_field_initializers(fields)),
         };
 
-    let struct_docs = format!(
-        "The `{name}` stage builder for [`{0}`](super::{0}).",
-        input.ident
-    );
+    let struct_docs = format!("The `{name}` stage for [`Builder`].");
     let setter_docs = format!("Sets the `{name}` field.");
 
     quote! {
@@ -333,15 +375,15 @@ fn stage(input: &DeriveInput, idx: usize, fields: &[ResolvedField<'_>]) -> Token
             #(#existing_names: #existing_types,)*
         }
 
-        impl #builder_name {
+        impl Builder<#builder_name> {
             #[doc = #setter_docs]
             #[inline]
-            pub fn #name(self, #name: #type_) -> #next_builder {
-                #next_builder {
-                    #(#existing_names: self.#existing_names,)*
+            pub fn #name(self, #name: #type_) -> Builder<#next_builder> {
+                Builder(#next_builder {
+                    #(#existing_names: self.0.#existing_names,)*
                     #name: #assign,
                     #optional_fields
-                }
+                })
             }
         }
     }
@@ -369,7 +411,7 @@ fn stage_vis(vis: &Visibility) -> TokenStream {
 
 fn stage_name(field: &ResolvedField<'_>) -> Ident {
     let name = format!(
-        "Builder{}Stage",
+        "{}Stage",
         field
             .field
             .ident
@@ -382,7 +424,7 @@ fn stage_name(field: &ResolvedField<'_>) -> Ident {
 }
 
 fn final_name() -> Ident {
-    Ident::new("BuilderFinal", Span::call_site())
+    Ident::new("Complete", Span::call_site())
 }
 
 fn final_stage(
@@ -396,8 +438,7 @@ fn final_stage(
     let names = fields.iter().map(|f| f.field.ident.as_ref().unwrap());
     let types = fields.iter().map(|f| &f.field.ty).collect::<Vec<_>>();
 
-    let struct_docs =
-        format!("The final stage builder for [`{struct_name}`](super::{struct_name}).");
+    let struct_docs = format!("The final stage for [`{struct_name}`](super::{struct_name}).");
 
     let setters = fields
         .iter()
@@ -416,10 +457,10 @@ fn final_stage(
     quote! {
         #[doc = #struct_docs]
         #vis struct #builder_name {
-            #(pub(super) #names: #types,)*
+            #(#names: #types,)*
         }
 
-        impl #builder_name {
+        impl Builder<#builder_name> {
             #(#setters)*
 
             #[doc = #build_docs]
@@ -438,7 +479,7 @@ fn final_stage_setter(field: &ResolvedField<'_>) -> TokenStream {
                 #[doc = #docs]
                 #[inline]
                 pub fn #name(mut self, #name: #type_) -> Self {
-                    self.#name = #assign;
+                    self.0.#name = #assign;
                     self
                 }
             }
@@ -465,7 +506,7 @@ fn final_stage_setter(field: &ResolvedField<'_>) -> TokenStream {
                 #[doc = #push_docs]
                 #[inline]
                 pub fn #push_method(mut self, #name: #type_) -> Self {
-                    self.#name.#push_setter(#convert);
+                    self.0.#name.#push_setter(#convert);
                     self
                 }
 
@@ -473,10 +514,10 @@ fn final_stage_setter(field: &ResolvedField<'_>) -> TokenStream {
                 #[inline]
                 pub fn #name(
                     mut self,
-                    #name: impl staged_builder::__private::IntoIterator<Item = #type_>,
+                    #name: impl ::staged_builder::__private::IntoIterator<Item = #type_>,
                 ) -> Self
                 {
-                    self.#name = staged_builder::__private::FromIterator::from_iter(#convert_iter);
+                    self.0.#name = ::staged_builder::__private::FromIterator::from_iter(#convert_iter);
                     self
                 }
 
@@ -484,10 +525,10 @@ fn final_stage_setter(field: &ResolvedField<'_>) -> TokenStream {
                 #[inline]
                 pub fn #extend_method(
                     mut self,
-                    #name: impl staged_builder::__private::IntoIterator<Item = #type_>,
+                    #name: impl ::staged_builder::__private::IntoIterator<Item = #type_>,
                 ) -> Self
                 {
-                    staged_builder::__private::Extend::extend(&mut self.#name, #convert_iter);
+                    ::staged_builder::__private::Extend::extend(&mut self.0.#name, #convert_iter);
                     self
                 }
             }
@@ -503,8 +544,8 @@ fn final_stage_setter(field: &ResolvedField<'_>) -> TokenStream {
 
             let iter_convert = if key.convert_fn.is_some() || value.convert_fn.is_some() {
                 quote! {
-                    staged_builder::__private::Iterator::map(
-                        staged_builder::__private::IntoIterator::into_iter(#name),
+                    ::staged_builder::__private::Iterator::map(
+                        ::staged_builder::__private::IntoIterator::into_iter(#name),
                         |(#key_name, #value_name)| (#key_convert, #value_convert)
                     )
                 }
@@ -524,7 +565,7 @@ fn final_stage_setter(field: &ResolvedField<'_>) -> TokenStream {
                 #[doc = #insert_docs]
                 #[inline]
                 pub fn #insert_method(mut self, #key_name: #key_type, #value_name: #value_type) -> Self {
-                    self.#name.insert(#key_convert, #value_convert);
+                    self.0.#name.insert(#key_convert, #value_convert);
                     self
                 }
 
@@ -532,9 +573,9 @@ fn final_stage_setter(field: &ResolvedField<'_>) -> TokenStream {
                 #[inline]
                 pub fn #name(
                     mut self,
-                    #name: impl staged_builder::__private::IntoIterator<Item = (#key_type, #value_type)>,
+                    #name: impl ::staged_builder::__private::IntoIterator<Item = (#key_type, #value_type)>,
                 ) -> Self {
-                    self.#name = staged_builder::__private::FromIterator::from_iter(#iter_convert);
+                    self.0.#name = ::staged_builder::__private::FromIterator::from_iter(#iter_convert);
                     self
                 }
 
@@ -542,10 +583,10 @@ fn final_stage_setter(field: &ResolvedField<'_>) -> TokenStream {
                 #[inline]
                 pub fn #extend_method(
                     mut self,
-                    #name: impl staged_builder::__private::IntoIterator<Item = (#key_type, #value_type)>,
+                    #name: impl ::staged_builder::__private::IntoIterator<Item = (#key_type, #value_type)>,
                 ) -> Self
                 {
-                    staged_builder::__private::Extend::extend(&mut self.#name, #iter_convert);
+                    ::staged_builder::__private::Extend::extend(&mut self.0.#name, #iter_convert);
                     self
                 }
             }
@@ -564,15 +605,15 @@ fn validated_build(input: &DeriveInput, fields: &[ResolvedField<'_>]) -> TokenSt
         #[inline]
         pub fn build(
             self,
-        ) -> staged_builder::__private::Result<
+        ) -> ::staged_builder::__private::Result<
             super::#struct_name,
-            <super::#struct_name as staged_builder::Validate>::Error,
+            <super::#struct_name as ::staged_builder::Validate>::Error,
         > {
             let value = super::#struct_name {
-                #(#names: self.#names,)*
+                #(#names: self.0.#names,)*
             };
-            staged_builder::Validate::validate(&value)?;
-            staged_builder::__private::Result::Ok(value)
+            ::staged_builder::Validate::validate(&value)?;
+            ::staged_builder::__private::Result::Ok(value)
         }
     }
 }
@@ -588,7 +629,7 @@ fn unvalidated_build(input: &DeriveInput, fields: &[ResolvedField<'_>]) -> Token
         #[inline]
         pub fn build(self) -> super::#struct_name {
             super::#struct_name {
-                #(#names: self.#names,)*
+                #(#names: self.0.#names,)*
             }
         }
     }
@@ -713,7 +754,7 @@ impl<'a> ResolvedField<'a> {
                     }
                     FieldOverride::Into(_) => {
                         resolved.mode = FieldMode::Normal {
-                            type_: quote!(impl staged_builder::__private::Into<#ty>),
+                            type_: quote!(impl ::staged_builder::__private::Into<#ty>),
                             assign: quote!(#name.into()),
                         };
                     }
@@ -726,7 +767,7 @@ impl<'a> ResolvedField<'a> {
                     }
                     FieldOverride::UnaryCollection { kind, config } => {
                         resolved.default =
-                            Some(quote!(staged_builder::__private::Default::default()));
+                            Some(quote!(::staged_builder::__private::Default::default()));
                         resolved.mode = FieldMode::UnaryCollection {
                             kind,
                             item: config.item,
@@ -734,7 +775,7 @@ impl<'a> ResolvedField<'a> {
                     }
                     FieldOverride::Map(config) => {
                         resolved.default =
-                            Some(quote!(staged_builder::__private::Default::default()));
+                            Some(quote!(::staged_builder::__private::Default::default()));
                         resolved.mode = FieldMode::Map {
                             key: config.key,
                             value: config.value,
@@ -885,7 +926,7 @@ impl Parse for DefaultConfig {
 
             expr.to_token_stream()
         } else {
-            quote!(staged_builder::__private::Default::default())
+            quote!(::staged_builder::__private::Default::default())
         };
 
         Ok(DefaultConfig { initializer })
@@ -980,8 +1021,8 @@ impl CollectionParamConfig {
     fn convert_iter(&self, name: &Ident) -> TokenStream {
         match &self.convert_fn {
             Some(convert_fn) => quote! {
-                staged_builder::__private::Iterator::map(
-                    staged_builder::__private::IntoIterator::into_iter(#name),
+                ::staged_builder::__private::Iterator::map(
+                    ::staged_builder::__private::IntoIterator::into_iter(#name),
                     #convert_fn,
                 )
             },
@@ -1017,8 +1058,8 @@ impl Parse for CollectionParamConfig {
         let mut convert_fn = None;
 
         if into {
-            type_ = quote!(impl staged_builder::__private::Into<#type_>);
-            convert_fn = Some(quote!(staged_builder::__private::Into::into));
+            type_ = quote!(impl ::staged_builder::__private::Into<#type_>);
+            convert_fn = Some(quote!(::staged_builder::__private::Into::into));
         }
 
         Ok(CollectionParamConfig { type_, convert_fn })
