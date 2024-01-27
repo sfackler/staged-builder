@@ -6,7 +6,7 @@ use syn::parse::{Parse, ParseStream};
 use syn::spanned::Spanned;
 use syn::{
     parse_macro_input, Attribute, Data, DeriveInput, Error, Expr, Field, Fields, FieldsNamed,
-    Ident, Type, Visibility,
+    Ident, Path, Type, Visibility,
 };
 
 /// Creates a staged builder interface for structs.
@@ -24,6 +24,8 @@ use syn::{
 ///
 /// * `validate` - The final `build` method will return a `Result`, calling the type's `Validate` implementation before
 ///     returning the constructed value.
+/// * `crate` - Indicates the path to the `staged_builder` crate root. Useful when reexporting the macro from another
+///     crate. Defaults to `::staged_builder`.
 ///
 /// # Field options
 ///
@@ -166,9 +168,16 @@ pub fn staged_builder(
     let input = parse_macro_input!(input as AttrInput);
 
     let attrs = input.attrs;
+
+    let overrides = match StructOverrides::new(&attrs) {
+        Ok(overrides) => overrides,
+        Err(e) => return e.into_compile_error().into(),
+    };
+    let crate_ = overrides.crate_();
+
     let body = input.body;
     quote! {
-        #[derive(::staged_builder::__StagedBuilderInternalDerive)]
+        #[derive(#crate_ ::__StagedBuilderInternalDerive)]
         #(#attrs)*
         #body
     }
@@ -222,17 +231,17 @@ fn expand(input: DeriveInput) -> Result<TokenStream, Error> {
     };
 
     let overrides = StructOverrides::new(&input.attrs)?;
-    let fields = resolve_fields(fields)?;
+    let fields = resolve_fields(&overrides, fields)?;
 
     let vis = &input.vis;
     let module_name = module_name(&input);
 
-    let builder_impl = builder_impl(&input, &fields);
+    let builder_impl = builder_impl(&input, &overrides, &fields);
 
     let module_docs = format!("Builder types for [`{}`].", &input.ident);
 
     let builder = builder(&input);
-    let default = default_impl(&fields);
+    let default = default_impl(&overrides, &fields);
     let stages = fields
         .iter()
         .enumerate()
@@ -261,20 +270,24 @@ fn module_name(input: &DeriveInput) -> Ident {
     Ident::new(&input.ident.to_string().to_snake_case(), input.ident.span())
 }
 
-fn builder_impl(input: &DeriveInput, fields: &[ResolvedField<'_>]) -> TokenStream {
+fn builder_impl(
+    input: &DeriveInput,
+    overrides: &StructOverrides,
+    fields: &[ResolvedField<'_>],
+) -> TokenStream {
     let name = &input.ident;
     let vis = &input.vis;
 
     let module_name = module_name(input);
-
     let builder_name = initial_stage(fields).unwrap_or_else(final_name);
+    let private = overrides.private();
 
     quote! {
         impl #name {
             /// Returns a new builder.
             #[inline]
             #vis fn builder() -> #module_name::Builder<#module_name::#builder_name> {
-                ::staged_builder::__private::Default::default()
+                #private::Default::default()
             }
         }
     }
@@ -296,14 +309,16 @@ fn builder(input: &DeriveInput) -> TokenStream {
     }
 }
 
-fn default_impl(fields: &[ResolvedField<'_>]) -> TokenStream {
+fn default_impl(overrides: &StructOverrides, fields: &[ResolvedField<'_>]) -> TokenStream {
     let (stage, initializers) = match initial_stage(fields) {
         Some(stage) => (stage, quote!()),
         None => (final_name(), default_field_initializers(fields)),
     };
 
+    let private = overrides.private();
+
     quote! {
-        impl ::staged_builder::__private::Default for Builder<#stage> {
+        impl #private::Default for Builder<#stage> {
             #[inline]
             fn default() -> Self {
                 Builder(#stage {
@@ -431,13 +446,13 @@ fn final_stage(
     let setters = fields
         .iter()
         .filter(|f| f.default.is_some())
-        .map(final_stage_setter);
+        .map(|f| final_stage_setter(overrides, f));
 
     let build_docs =
         format!("Consumes the builder, returning a [`{struct_name}`](super::{struct_name}).");
 
     let build = if overrides.validate {
-        validated_build(input, fields)
+        validated_build(input, overrides, fields)
     } else {
         unvalidated_build(input, fields)
     };
@@ -457,7 +472,10 @@ fn final_stage(
     }
 }
 
-fn final_stage_setter(field: &ResolvedField<'_>) -> TokenStream {
+fn final_stage_setter(
+    struct_overrides: &StructOverrides,
+    field: &ResolvedField<'_>,
+) -> TokenStream {
     let name = field.field.ident.as_ref().unwrap();
 
     match &field.mode {
@@ -475,7 +493,7 @@ fn final_stage_setter(field: &ResolvedField<'_>) -> TokenStream {
         FieldMode::Seq { push, item } => {
             let type_ = &item.type_;
             let convert = item.convert(name);
-            let convert_iter = item.convert_iter(name);
+            let convert_iter = item.convert_iter(struct_overrides, name);
 
             let push_docs = format!("Adds a value to the `{name}` field.");
             let push_method = Ident::new(&format!("{push}_{name}"), name.span());
@@ -484,6 +502,8 @@ fn final_stage_setter(field: &ResolvedField<'_>) -> TokenStream {
 
             let extend_docs = format!("Adds values to the `{name}` field.");
             let extend_method = Ident::new(&format!("extend_{name}"), name.span());
+
+            let private = struct_overrides.private();
 
             quote! {
                 #[doc = #push_docs]
@@ -497,10 +517,10 @@ fn final_stage_setter(field: &ResolvedField<'_>) -> TokenStream {
                 #[inline]
                 pub fn #name(
                     mut self,
-                    #name: impl ::staged_builder::__private::IntoIterator<Item = #type_>,
+                    #name: impl #private::IntoIterator<Item = #type_>,
                 ) -> Self
                 {
-                    self.0.#name = ::staged_builder::__private::FromIterator::from_iter(#convert_iter);
+                    self.0.#name = #private::FromIterator::from_iter(#convert_iter);
                     self
                 }
 
@@ -508,10 +528,10 @@ fn final_stage_setter(field: &ResolvedField<'_>) -> TokenStream {
                 #[inline]
                 pub fn #extend_method(
                     mut self,
-                    #name: impl ::staged_builder::__private::IntoIterator<Item = #type_>,
+                    #name: impl #private::IntoIterator<Item = #type_>,
                 ) -> Self
                 {
-                    ::staged_builder::__private::Extend::extend(&mut self.0.#name, #convert_iter);
+                    #private::Extend::extend(&mut self.0.#name, #convert_iter);
                     self
                 }
             }
@@ -525,10 +545,12 @@ fn final_stage_setter(field: &ResolvedField<'_>) -> TokenStream {
             let value_type = &value.type_;
             let value_convert = value.convert(&value_name);
 
+            let private = struct_overrides.private();
+
             let iter_convert = if key.convert.is_some() || value.convert.is_some() {
                 quote! {
-                    ::staged_builder::__private::Iterator::map(
-                        ::staged_builder::__private::IntoIterator::into_iter(#name),
+                    #private::Iterator::map(
+                        #private::IntoIterator::into_iter(#name),
                         |(#key_name, #value_name)| (#key_convert, #value_convert)
                     )
                 }
@@ -556,9 +578,9 @@ fn final_stage_setter(field: &ResolvedField<'_>) -> TokenStream {
                 #[inline]
                 pub fn #name(
                     mut self,
-                    #name: impl ::staged_builder::__private::IntoIterator<Item = (#key_type, #value_type)>,
+                    #name: impl #private::IntoIterator<Item = (#key_type, #value_type)>,
                 ) -> Self {
-                    self.0.#name = ::staged_builder::__private::FromIterator::from_iter(#iter_convert);
+                    self.0.#name = #private::FromIterator::from_iter(#iter_convert);
                     self
                 }
 
@@ -566,10 +588,10 @@ fn final_stage_setter(field: &ResolvedField<'_>) -> TokenStream {
                 #[inline]
                 pub fn #extend_method(
                     mut self,
-                    #name: impl ::staged_builder::__private::IntoIterator<Item = (#key_type, #value_type)>,
+                    #name: impl #private::IntoIterator<Item = (#key_type, #value_type)>,
                 ) -> Self
                 {
-                    ::staged_builder::__private::Extend::extend(&mut self.0.#name, #iter_convert);
+                    #private::Extend::extend(&mut self.0.#name, #iter_convert);
                     self
                 }
             }
@@ -577,26 +599,33 @@ fn final_stage_setter(field: &ResolvedField<'_>) -> TokenStream {
     }
 }
 
-fn validated_build(input: &DeriveInput, fields: &[ResolvedField<'_>]) -> TokenStream {
+fn validated_build(
+    input: &DeriveInput,
+    overrides: &StructOverrides,
+    fields: &[ResolvedField<'_>],
+) -> TokenStream {
     let struct_name = &input.ident;
     let names = fields
         .iter()
         .map(|f| f.field.ident.as_ref().unwrap())
         .collect::<Vec<_>>();
 
+    let crate_ = overrides.crate_();
+    let private = overrides.private();
+
     quote! {
         #[inline]
         pub fn build(
             self,
-        ) -> ::staged_builder::__private::Result<
+        ) -> #private::Result<
             super::#struct_name,
-            <super::#struct_name as ::staged_builder::Validate>::Error,
+            <super::#struct_name as #crate_::Validate>::Error,
         > {
             let value = super::#struct_name {
                 #(#names: self.0.#names,)*
             };
-            ::staged_builder::Validate::validate(&value)?;
-            ::staged_builder::__private::Result::Ok(value)
+            #crate_::Validate::validate(&value)?;
+            #private::Result::Ok(value)
         }
     }
 }
@@ -618,12 +647,15 @@ fn unvalidated_build(input: &DeriveInput, fields: &[ResolvedField<'_>]) -> Token
     }
 }
 
-fn resolve_fields(fields: &FieldsNamed) -> Result<Vec<ResolvedField<'_>>, Error> {
+fn resolve_fields<'a>(
+    overrides: &StructOverrides,
+    fields: &'a FieldsNamed,
+) -> Result<Vec<ResolvedField<'a>>, Error> {
     let mut resolved_fields = vec![];
     let mut error = None::<Error>;
 
     for field in &fields.named {
-        match ResolvedField::new(field) {
+        match ResolvedField::new(overrides, field) {
             Ok(field) => resolved_fields.push(field),
             Err(e) => match &mut error {
                 Some(error) => error.combine(e),
@@ -641,6 +673,8 @@ fn resolve_fields(fields: &FieldsNamed) -> Result<Vec<ResolvedField<'_>>, Error>
 #[derive(StructMeta, Default)]
 struct StructOverrides {
     validate: bool,
+    #[struct_meta(name = "crate")]
+    crate_: Option<Path>,
 }
 
 impl StructOverrides {
@@ -652,6 +686,18 @@ impl StructOverrides {
             .next()
             .transpose()
             .map(|o| o.unwrap_or_default())
+    }
+
+    fn crate_(&self) -> TokenStream {
+        match &self.crate_ {
+            Some(crate_) => quote!(#crate_),
+            None => quote!(::staged_builder),
+        }
+    }
+
+    fn private(&self) -> TokenStream {
+        let crate_ = self.crate_();
+        quote!(#crate_::__private)
     }
 }
 
@@ -682,7 +728,10 @@ struct ParamConfig {
 }
 
 impl ParamConfig {
-    fn new(overrides: &NameArgs<ParamOverrides>) -> Result<Self, Error> {
+    fn new(
+        struct_overrides: &StructOverrides,
+        overrides: &NameArgs<ParamOverrides>,
+    ) -> Result<Self, Error> {
         match &overrides.args.custom {
             Some(custom) => {
                 let type_ = &custom.args.type_;
@@ -696,12 +745,16 @@ impl ParamConfig {
                 let type_ = overrides.args.type_.as_ref().ok_or_else(|| {
                     Error::new(overrides.name_span, "missing `type` configuration")
                 })?;
-                let mut type_ = quote!(#type_);
-                let mut convert = None;
-                if overrides.args.into {
-                    type_ = quote!(impl ::staged_builder::__private::Into<#type_>);
-                    convert = Some(quote!(::staged_builder::__private::Into::into));
-                }
+
+                let (type_, convert) = if overrides.args.into {
+                    let private = struct_overrides.private();
+                    (
+                        quote!(impl #private::Into<#type_>),
+                        Some(quote!(#private::Into::into)),
+                    )
+                } else {
+                    (quote!(#type_), None)
+                };
 
                 Ok(ParamConfig { type_, convert })
             }
@@ -715,21 +768,27 @@ impl ParamConfig {
         }
     }
 
-    fn convert_iter(&self, name: &Ident) -> TokenStream {
+    fn convert_iter(&self, struct_overrides: &StructOverrides, name: &Ident) -> TokenStream {
         match &self.convert {
-            Some(convert_fn) => quote! {
-                ::staged_builder::__private::Iterator::map(
-                    ::staged_builder::__private::IntoIterator::into_iter(#name),
-                    #convert_fn,
-                )
-            },
+            Some(convert_fn) => {
+                let private = struct_overrides.private();
+                quote! {
+                    #private::Iterator::map(
+                        #private::IntoIterator::into_iter(#name),
+                        #convert_fn,
+                    )
+                }
+            }
             None => quote!(#name),
         }
     }
 }
 
 impl<'a> ResolvedField<'a> {
-    fn new(field: &'a Field) -> Result<ResolvedField<'a>, Error> {
+    fn new(
+        struct_overrides: &StructOverrides,
+        field: &'a Field,
+    ) -> Result<ResolvedField<'a>, Error> {
         let name = field.ident.as_ref().unwrap();
         let ty = &field.ty;
 
@@ -747,15 +806,19 @@ impl<'a> ResolvedField<'a> {
         if let Some(default) = overrides.default {
             let default = match default.value {
                 Some(v) => quote!(#v),
-                None => quote!(::staged_builder::__private::Default::default()),
+                None => {
+                    let private = struct_overrides.private();
+                    quote!(#private::Default::default())
+                }
             };
             resolved.default = Some(default)
         }
 
         if overrides.into {
+            let private = struct_overrides.private();
             resolved.mode = FieldMode::Normal {
-                type_: quote!(impl ::staged_builder::__private::Into<#ty>),
-                assign: quote!(#name.into()),
+                type_: quote!(impl #private::Into<#ty>),
+                assign: quote!(#private::Into::into(#name)),
             }
         } else if let Some(custom) = overrides.custom {
             let type_ = custom.args.type_;
@@ -766,27 +829,30 @@ impl<'a> ResolvedField<'a> {
             }
         } else if let Some(list) = overrides.list {
             if resolved.default.is_none() {
-                resolved.default = Some(quote!(::staged_builder::__private::Default::default()));
+                let private = struct_overrides.private();
+                resolved.default = Some(quote!(#private::Default::default()));
             }
             resolved.mode = FieldMode::Seq {
                 push: quote!(push),
-                item: ParamConfig::new(&list.args.item)?,
+                item: ParamConfig::new(struct_overrides, &list.args.item)?,
             }
         } else if let Some(set) = overrides.set {
             if resolved.default.is_none() {
-                resolved.default = Some(quote!(::staged_builder::__private::Default::default()));
+                let private = struct_overrides.private();
+                resolved.default = Some(quote!(#private::Default::default()));
             }
             resolved.mode = FieldMode::Seq {
                 push: quote!(insert),
-                item: ParamConfig::new(&set.args.item)?,
+                item: ParamConfig::new(struct_overrides, &set.args.item)?,
             }
         } else if let Some(map) = overrides.map {
             if resolved.default.is_none() {
-                resolved.default = Some(quote!(::staged_builder::__private::Default::default()));
+                let private = struct_overrides.private();
+                resolved.default = Some(quote!(#private::Default::default()));
             }
             resolved.mode = FieldMode::Map {
-                key: ParamConfig::new(&map.args.key)?,
-                value: ParamConfig::new(&map.args.value)?,
+                key: ParamConfig::new(struct_overrides, &map.args.key)?,
+                value: ParamConfig::new(struct_overrides, &map.args.value)?,
             }
         }
 
