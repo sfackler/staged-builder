@@ -157,3 +157,15 @@ fn custom() {
     };
     assert_eq!(actual, expected);
 }
+
+#[staged_builder]
+#[builder(mod = my_custom_mod)]
+struct CustomMod {
+    _foo: i32,
+}
+
+#[test]
+fn custom_mod() {
+    CustomMod::builder()._foo(1).build();
+    my_custom_mod::Builder::default()._foo(1).build();
+}
