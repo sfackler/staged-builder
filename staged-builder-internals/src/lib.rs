@@ -26,6 +26,8 @@ use syn::{
 ///     returning the constructed value.
 /// * `crate` - Indicates the path to the `staged_builder` crate root. Useful when reexporting the macro from another
 ///     crate. Defaults to `::staged_builder`.
+/// * `mod` - The name of the submodule that will contain the generated builder types. Defaults to the struct's name
+///     converted to `snake_case`.
 ///
 /// # Field options
 ///
@@ -234,7 +236,7 @@ fn expand(input: DeriveInput) -> Result<TokenStream, Error> {
     let fields = resolve_fields(&overrides, fields)?;
 
     let vis = &input.vis;
-    let module_name = module_name(&input);
+    let module_name = module_name(&overrides, &input);
 
     let builder_impl = builder_impl(&input, &overrides, &fields);
 
@@ -266,8 +268,11 @@ fn expand(input: DeriveInput) -> Result<TokenStream, Error> {
     Ok(tokens)
 }
 
-fn module_name(input: &DeriveInput) -> Ident {
-    Ident::new(&input.ident.to_string().to_snake_case(), input.ident.span())
+fn module_name(overrides: &StructOverrides, input: &DeriveInput) -> Ident {
+    overrides
+        .mod_
+        .clone()
+        .unwrap_or_else(|| Ident::new(&input.ident.to_string().to_snake_case(), input.ident.span()))
 }
 
 fn builder_impl(
@@ -278,7 +283,7 @@ fn builder_impl(
     let name = &input.ident;
     let vis = &input.vis;
 
-    let module_name = module_name(input);
+    let module_name = module_name(overrides, input);
     let builder_name = initial_stage(fields).unwrap_or_else(final_name);
     let private = overrides.private();
 
@@ -675,6 +680,8 @@ struct StructOverrides {
     validate: bool,
     #[struct_meta(name = "crate")]
     crate_: Option<Path>,
+    #[struct_meta(name = "mod")]
+    mod_: Option<Ident>,
 }
 
 impl StructOverrides {

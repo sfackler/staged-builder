@@ -1,4 +1,5 @@
 [workspace]
+resolver = "2"
 members = ["staged-builder", "staged-builder-internals"]
 
 [patch.crates-io]
