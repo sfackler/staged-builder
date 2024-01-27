@@ -13,4 +13,5 @@ proc-macro = true
 heck = "0.4"
 proc-macro2 = "1"
 quote = "1"
+structmeta = "0.2"
 syn = { version = "2", features = ["full"] }
