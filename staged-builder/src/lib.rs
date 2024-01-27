@@ -17,8 +17,8 @@
 //!     #[builder(into)]
 //!     name: String,
 //!     age: u32,
-//!     #[builder(default)]
-//!     employer: Option<String>,
+//!     #[builder(list(item(type = Person)))]
+//!     parents: Vec<Person>,
 //! }
 //!
 //! # fn main() {
@@ -28,7 +28,7 @@
 //!     .build();
 //! # }
 //! ```
-#![no_std]
+#![cfg_attr(not(doc), no_std)]
 
 // Not part of the public API.
 #[doc(hidden)]
@@ -54,4 +54,16 @@ pub trait Validate {
 
     /// Validates the state of `self`.
     fn validate(&self) -> Result<(), Self::Error>;
+}
+
+/// An example type using [`#[staged_builder]`](staged_builder).
+#[cfg(doc)]
+#[staged_builder]
+#[builder(crate = crate)]
+pub struct ExamplePerson {
+    #[builder(into)]
+    pub name: String,
+    pub age: u32,
+    #[builder(list(item(type = ExamplePerson)))]
+    pub parents: Vec<ExamplePerson>,
 }
