@@ -497,7 +497,7 @@ fn final_stage_setter(
         }
         FieldMode::Seq { push, item } => {
             let type_ = &item.type_;
-            let convert = item.convert(name);
+            let convert = item.convert(struct_overrides, name);
             let convert_iter = item.convert_iter(struct_overrides, name);
 
             let push_docs = format!("Adds a value to the `{name}` field.");
@@ -544,11 +544,11 @@ fn final_stage_setter(
         FieldMode::Map { key, value } => {
             let key_name = Ident::new("key", Span::call_site());
             let key_type = &key.type_;
-            let key_convert = key.convert(&key_name);
+            let key_convert = key.convert(struct_overrides, &key_name);
 
             let value_name = Ident::new("value", Span::call_site());
             let value_type = &value.type_;
-            let value_convert = value.convert(&value_name);
+            let value_convert = value.convert(struct_overrides, &value_name);
 
             let private = struct_overrides.private();
 
@@ -731,21 +731,21 @@ enum FieldMode {
 
 struct ParamConfig {
     type_: TokenStream,
-    convert: Option<TokenStream>,
+    convert: Option<Expr>,
 }
 
 impl ParamConfig {
     fn new(
         struct_overrides: &StructOverrides,
-        overrides: &NameArgs<ParamOverrides>,
+        overrides: NameArgs<ParamOverrides>,
     ) -> Result<Self, Error> {
-        match &overrides.args.custom {
+        match overrides.args.custom {
             Some(custom) => {
-                let type_ = &custom.args.type_;
-                let convert = &custom.args.convert;
+                let type_ = custom.args.type_;
+                let convert = custom.args.convert;
                 Ok(ParamConfig {
                     type_: quote!(#type_),
-                    convert: Some(quote!(#convert)),
+                    convert: Some(convert),
                 })
             }
             None => {
@@ -757,7 +757,7 @@ impl ParamConfig {
                     let private = struct_overrides.private();
                     (
                         quote!(impl #private::Into<#type_>),
-                        Some(quote!(#private::Into::into)),
+                        Some(syn::parse2(quote!(#private::Into::into)).unwrap()),
                     )
                 } else {
                     (quote!(#type_), None)
@@ -768,9 +768,9 @@ impl ParamConfig {
         }
     }
 
-    fn convert(&self, name: &Ident) -> TokenStream {
+    fn convert(&self, struct_overrides: &StructOverrides, name: &Ident) -> TokenStream {
         match &self.convert {
-            Some(convert_fn) => quote!(#convert_fn(#name)),
+            Some(convert_fn) => call_convert(struct_overrides, name, convert_fn),
             None => quote!(#name),
         }
     }
@@ -788,6 +788,18 @@ impl ParamConfig {
             }
             None => quote!(#name),
         }
+    }
+}
+
+// Directly-invoked closures don't infer properly:
+// https://internals.rust-lang.org/t/directly-invoked-closure-inference-weirdness/20235
+fn call_convert(struct_overrides: &StructOverrides, name: &Ident, expr: &Expr) -> TokenStream {
+    match expr {
+        Expr::Closure(closure) => {
+            let private = struct_overrides.private();
+            quote!(#private::call_hack(#closure, #name))
+        }
+        expr => quote!(#expr(#name)),
     }
 }
 
@@ -832,7 +844,7 @@ impl<'a> ResolvedField<'a> {
             let convert = custom.args.convert;
             resolved.mode = FieldMode::Normal {
                 type_: quote!(#type_),
-                assign: quote!(#convert(#name)),
+                assign: call_convert(struct_overrides, name, &convert),
             }
         } else if let Some(list) = overrides.list {
             if resolved.default.is_none() {
@@ -841,7 +853,7 @@ impl<'a> ResolvedField<'a> {
             }
             resolved.mode = FieldMode::Seq {
                 push: quote!(push),
-                item: ParamConfig::new(struct_overrides, &list.args.item)?,
+                item: ParamConfig::new(struct_overrides, list.args.item)?,
             }
         } else if let Some(set) = overrides.set {
             if resolved.default.is_none() {
@@ -850,7 +862,7 @@ impl<'a> ResolvedField<'a> {
             }
             resolved.mode = FieldMode::Seq {
                 push: quote!(insert),
-                item: ParamConfig::new(struct_overrides, &set.args.item)?,
+                item: ParamConfig::new(struct_overrides, set.args.item)?,
             }
         } else if let Some(map) = overrides.map {
             if resolved.default.is_none() {
@@ -858,8 +870,8 @@ impl<'a> ResolvedField<'a> {
                 resolved.default = Some(quote!(#private::Default::default()));
             }
             resolved.mode = FieldMode::Map {
-                key: ParamConfig::new(struct_overrides, &map.args.key)?,
-                value: ParamConfig::new(struct_overrides, &map.args.value)?,
+                key: ParamConfig::new(struct_overrides, map.args.key)?,
+                value: ParamConfig::new(struct_overrides, map.args.value)?,
             }
         }
 

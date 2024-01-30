@@ -43,6 +43,11 @@ pub mod __private {
     pub use core::default::Default;
     pub use core::iter::{Extend, FromIterator, IntoIterator, Iterator};
     pub use core::result::Result;
+
+    #[inline]
+    pub fn call_hack<T, R>(f: impl FnOnce(T) -> R, v: T) -> R {
+        f(v)
+    }
 }
 
 /// A trait for types which validate their state before construction finishes.

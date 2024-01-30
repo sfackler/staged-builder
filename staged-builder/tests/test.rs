@@ -169,3 +169,22 @@ fn custom_mod() {
     CustomMod::builder()._foo(1).build();
     my_custom_mod::Builder::default()._foo(1).build();
 }
+
+#[derive(PartialEq, Debug)]
+#[staged_builder]
+struct ClosureConvert {
+    #[builder(custom(type = impl Display, convert = |s| s.to_string()))]
+    single: String,
+    #[builder(list(item(custom(type = impl Display, convert = |s| s.to_string()))))]
+    list: Vec<String>,
+}
+
+#[test]
+fn closure_convert() {
+    let actual = ClosureConvert::builder().single(true).push_list(15).build();
+    let expected = ClosureConvert {
+        single: "true".to_string(),
+        list: vec!["15".to_string()],
+    };
+    assert_eq!(actual, expected);
+}
