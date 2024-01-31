@@ -253,14 +253,14 @@ fn module(
     overrides: &StructOverrides,
     fields: &[ResolvedField<'_>],
 ) -> TokenStream {
-    let builder = builder(&input, overrides);
-    let default = default_impl(&overrides, &fields);
+    let builder = builder(input, overrides);
+    let default = default_impl(overrides, fields);
     let stages = fields
         .iter()
         .enumerate()
         .filter(|(_, f)| f.default.is_none())
-        .map(|(i, _)| stage(&input, i, &fields));
-    let final_stage = final_stage(&input, &overrides, &fields);
+        .map(|(i, _)| stage(input, i, fields));
+    let final_stage = final_stage(input, overrides, fields);
 
     let parts = quote! {
         #builder
@@ -274,7 +274,7 @@ fn module(
     }
 
     let vis = &input.vis;
-    let module_name = module_name(&overrides, &input);
+    let module_name = module_name(overrides, input);
 
     let module_docs = format!("Builder types for [`{}`].", &input.ident);
 
