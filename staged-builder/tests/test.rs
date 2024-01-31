@@ -208,3 +208,20 @@ mod inline {
         assert_eq!(actual, expected);
     }
 }
+
+#[derive(PartialEq, Debug)]
+#[staged_builder]
+#[builder(builder = MyBuilder, complete = MyComplete)]
+struct CustomNames {
+    #[builder(stage = MyAStage)]
+    a: i32,
+}
+
+#[test]
+fn custom_names() {
+    let builder: custom_names::MyBuilder<custom_names::MyAStage> = CustomNames::builder();
+    let stage: custom_names::MyBuilder<custom_names::MyComplete> = builder.a(1);
+    let actual = stage.build();
+    let expected = CustomNames { a: 1 };
+    assert_eq!(actual, expected);
+}

@@ -30,6 +30,8 @@ use syn::{
 ///     converted to `snake_case`.
 /// * `inline` - Causes the generated builder types to be defined in the same module as the struct, rather than a
 ///     submodule.
+/// * `builder` - Sets the name of the generated builder type. Defaults to `Builder`.
+/// * `complete` - Sets the name of the generated complete stage type. Defaults to `Complete`.
 ///
 /// # Field options
 ///
@@ -57,6 +59,8 @@ use syn::{
 ///     `extend_foo` to exend the collection with new entries. The underlying type must have an `insert` method, a
 ///     [`FromIterator`] implementation, and an [`Extend`] implementation. The key and value types must be configured in
 ///     the attribute: `#[builder(map(key(type = YourKeyType), value(type = YourValueType)))]`.
+/// * `stage`- Sets the name of the generated stage type. Defaults to the name of the field converted to `PascalCase`
+///     with `Stage` appended.
 ///
 /// # Collection type options
 ///
@@ -303,20 +307,21 @@ fn builder_impl(
     let name = &input.ident;
     let vis = &input.vis;
 
+    let builder_name = builder_name(overrides);
     let module_path = if overrides.inline {
         quote!()
     } else {
         let module_name = module_name(overrides, input);
         quote!(#module_name::)
     };
-    let stage_name = initial_stage(fields).unwrap_or_else(final_name);
+    let stage_name = initial_stage(fields).unwrap_or_else(|| final_name(overrides));
     let private = overrides.private();
 
     quote! {
         impl #name {
             /// Returns a new builder.
             #[inline]
-            #vis fn builder() -> #module_path Builder<#module_path #stage_name> {
+            #vis fn builder() -> #module_path #builder_name<#module_path #stage_name> {
                 #private::Default::default()
             }
         }
@@ -327,7 +332,7 @@ fn initial_stage(fields: &[ResolvedField<'_>]) -> Option<Ident> {
     fields
         .iter()
         .find(|f| f.default.is_none())
-        .map(|f| stage_name(f))
+        .map(|f| f.stage.clone())
 }
 
 fn builder(input: &DeriveInput, overrides: &StructOverrides) -> TokenStream {
@@ -340,26 +345,28 @@ fn builder(input: &DeriveInput, overrides: &StructOverrides) -> TokenStream {
     let docs = format!("A builder for {link}");
 
     let vis = stage_vis(&input.vis, overrides);
+    let builder_name = builder_name(overrides);
 
     quote! {
         #[doc = #docs]
-        #vis struct Builder<T>(T);
+        #vis struct #builder_name<T>(T);
     }
 }
 
 fn default_impl(overrides: &StructOverrides, fields: &[ResolvedField<'_>]) -> TokenStream {
     let (stage, initializers) = match initial_stage(fields) {
         Some(stage) => (stage, quote!()),
-        None => (final_name(), default_field_initializers(fields)),
+        None => (final_name(overrides), default_field_initializers(fields)),
     };
+    let builder_name = builder_name(overrides);
 
     let private = overrides.private();
 
     quote! {
-        impl #private::Default for Builder<#stage> {
+        impl #private::Default for #builder_name<#stage> {
             #[inline]
             fn default() -> Self {
-                Builder(#stage {
+                #builder_name(#stage {
                     #initializers
                 })
             }
@@ -393,7 +400,7 @@ fn stage(
         _ => unreachable!(),
     };
 
-    let builder_name = stage_name(field);
+    let stage_name = &field.stage;
 
     let existing_fields = fields[..idx]
         .iter()
@@ -406,26 +413,27 @@ fn stage(
         .collect::<Vec<_>>();
     let existing_types = existing_fields.iter().map(|f| &f.field.ty);
 
-    let (next_builder, optional_fields) =
-        match fields[idx + 1..].iter().find(|f| f.default.is_none()) {
-            Some(field) => (stage_name(field), quote!()),
-            None => (final_name(), default_field_initializers(fields)),
-        };
+    let (next_stage, optional_fields) = match fields[idx + 1..].iter().find(|f| f.default.is_none())
+    {
+        Some(field) => (field.stage.clone(), quote!()),
+        None => (final_name(overrides), default_field_initializers(fields)),
+    };
 
-    let struct_docs = format!("The `{name}` stage for [`Builder`].");
+    let builder_name = builder_name(overrides);
+    let struct_docs = format!("The `{name}` stage for [`{builder_name}`].");
     let setter_docs = format!("Sets the `{name}` field.");
 
     quote! {
         #[doc = #struct_docs]
-        #vis struct #builder_name {
+        #vis struct #stage_name {
             #(#existing_names: #existing_types,)*
         }
 
-        impl Builder<#builder_name> {
+        impl #builder_name<#stage_name> {
             #[doc = #setter_docs]
             #[inline]
-            pub fn #name(self, #name: #type_) -> Builder<#next_builder> {
-                Builder(#next_builder {
+            pub fn #name(self, #name: #type_) -> #builder_name<#next_stage> {
+                #builder_name(#next_stage {
                     #(#existing_names: self.0.#existing_names,)*
                     #name: #assign,
                     #optional_fields
@@ -459,22 +467,18 @@ fn stage_vis(vis: &Visibility, overrides: &StructOverrides) -> TokenStream {
     }
 }
 
-fn stage_name(field: &ResolvedField<'_>) -> Ident {
-    let name = format!(
-        "{}Stage",
-        field
-            .field
-            .ident
-            .as_ref()
-            .unwrap()
-            .to_string()
-            .to_upper_camel_case()
-    );
-    Ident::new(&name, field.field.span())
+fn builder_name(overrides: &StructOverrides) -> Ident {
+    overrides
+        .builder
+        .clone()
+        .unwrap_or_else(|| Ident::new("Builder", Span::call_site()))
 }
 
-fn final_name() -> Ident {
-    Ident::new("Complete", Span::call_site())
+fn final_name(overrides: &StructOverrides) -> Ident {
+    overrides
+        .complete
+        .clone()
+        .unwrap_or_else(|| Ident::new("Complete", Span::call_site()))
 }
 
 fn final_stage(
@@ -483,7 +487,8 @@ fn final_stage(
     fields: &[ResolvedField<'_>],
 ) -> TokenStream {
     let vis = stage_vis(&input.vis, overrides);
-    let builder_name = final_name();
+    let builder_name = builder_name(overrides);
+    let stage_name = final_name(overrides);
     let struct_name = &input.ident;
     let names = fields.iter().map(|f| f.field.ident.as_ref().unwrap());
     let types = fields.iter().map(|f| &f.field.ty).collect::<Vec<_>>();
@@ -506,11 +511,11 @@ fn final_stage(
 
     quote! {
         #[doc = #struct_docs]
-        #vis struct #builder_name {
+        #vis struct #stage_name {
             #(#names: #types,)*
         }
 
-        impl Builder<#builder_name> {
+        impl #builder_name<#stage_name> {
             #(#setters)*
 
             #[doc = #build_docs]
@@ -739,6 +744,8 @@ struct StructOverrides {
     #[struct_meta(name = "mod")]
     mod_: Option<Ident>,
     inline: bool,
+    builder: Option<Ident>,
+    complete: Option<Ident>,
 }
 
 impl StructOverrides {
@@ -768,6 +775,7 @@ impl StructOverrides {
 struct ResolvedField<'a> {
     field: &'a Field,
     default: Option<TokenStream>,
+    stage: Ident,
     mode: FieldMode,
 }
 
@@ -868,9 +876,21 @@ impl<'a> ResolvedField<'a> {
         let name = field.ident.as_ref().unwrap();
         let ty = &field.ty;
 
+        let stage = format!(
+            "{}Stage",
+            field
+                .ident
+                .as_ref()
+                .unwrap()
+                .to_string()
+                .to_upper_camel_case()
+        );
+        let stage = Ident::new(&stage, field.span());
+
         let mut resolved = ResolvedField {
             field,
             default: None,
+            stage,
             mode: FieldMode::Normal {
                 type_: quote!(#ty),
                 assign: quote!(#name),
@@ -932,6 +952,10 @@ impl<'a> ResolvedField<'a> {
             }
         }
 
+        if let Some(stage) = overrides.stage {
+            resolved.stage = stage;
+        }
+
         Ok(resolved)
     }
 }
@@ -944,6 +968,7 @@ struct FieldOverrides {
     list: Option<NameArgs<SeqOverrides>>,
     set: Option<NameArgs<SeqOverrides>>,
     map: Option<NameArgs<MapOverrides>>,
+    stage: Option<Ident>,
 }
 
 impl FieldOverrides {
