@@ -259,7 +259,7 @@ fn module(
         .iter()
         .enumerate()
         .filter(|(_, f)| f.default.is_none())
-        .map(|(i, _)| stage(input, i, fields));
+        .map(|(i, _)| stage(input, overrides, i, fields));
     let final_stage = final_stage(input, overrides, fields);
 
     let parts = quote! {
@@ -339,9 +339,11 @@ fn builder(input: &DeriveInput, overrides: &StructOverrides) -> TokenStream {
 
     let docs = format!("A builder for {link}");
 
+    let vis = stage_vis(&input.vis, overrides);
+
     quote! {
         #[doc = #docs]
-        pub struct Builder<T>(T);
+        #vis struct Builder<T>(T);
     }
 }
 
@@ -376,8 +378,13 @@ fn default_field_initializers(fields: &[ResolvedField<'_>]) -> TokenStream {
     quote!(#(#fields,)*)
 }
 
-fn stage(input: &DeriveInput, idx: usize, fields: &[ResolvedField<'_>]) -> TokenStream {
-    let vis = stage_vis(&input.vis);
+fn stage(
+    input: &DeriveInput,
+    overrides: &StructOverrides,
+    idx: usize,
+    fields: &[ResolvedField<'_>],
+) -> TokenStream {
+    let vis = stage_vis(&input.vis, overrides);
     let field = &fields[idx];
     let name = field.field.ident.as_ref().unwrap();
 
@@ -428,7 +435,11 @@ fn stage(input: &DeriveInput, idx: usize, fields: &[ResolvedField<'_>]) -> Token
     }
 }
 
-fn stage_vis(vis: &Visibility) -> TokenStream {
+fn stage_vis(vis: &Visibility, overrides: &StructOverrides) -> TokenStream {
+    if overrides.inline {
+        return quote!(#vis);
+    }
+
     match vis {
         Visibility::Public(_) => quote!(#vis),
         Visibility::Restricted(restricted) => {
@@ -471,7 +482,7 @@ fn final_stage(
     overrides: &StructOverrides,
     fields: &[ResolvedField<'_>],
 ) -> TokenStream {
-    let vis = stage_vis(&input.vis);
+    let vis = stage_vis(&input.vis, overrides);
     let builder_name = final_name();
     let struct_name = &input.ident;
     let names = fields.iter().map(|f| f.field.ident.as_ref().unwrap());
