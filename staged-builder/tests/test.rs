@@ -188,3 +188,23 @@ fn closure_convert() {
     };
     assert_eq!(actual, expected);
 }
+
+mod inline {
+    use staged_builder::staged_builder;
+
+    #[derive(PartialEq, Debug)]
+    #[staged_builder]
+    #[builder(inline)]
+    struct Inline {
+        a: i32,
+    }
+
+    #[test]
+    fn inline() {
+        let builder: Builder<AStage> = Inline::builder();
+        let stage: Builder<Complete> = builder.a(1);
+        let actual: Inline = stage.build();
+        let expected = Inline { a: 1 };
+        assert_eq!(actual, expected);
+    }
+}
