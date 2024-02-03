@@ -1,17 +1,13 @@
 use heck::{ToSnakeCase, ToUpperCamelCase};
-use overrides::{FieldOverrides, ParamOverrides};
 use proc_macro2::{Span, TokenStream};
 use quote::quote;
-use structmeta::{NameArgs, StructMeta};
+use structmeta::{NameArgs, NameValue, StructMeta};
 use syn::parse::{Parse, ParseStream};
 use syn::spanned::Spanned;
 use syn::{
     parse_macro_input, Attribute, Data, DeriveInput, Error, Expr, Field, Fields, FieldsNamed,
-    Ident, Path, Visibility,
+    Ident, Path, Type, Visibility,
 };
-
-#[allow(warnings, clippy::all)]
-mod overrides;
 
 /// Creates a staged builder interface for structs.
 ///
@@ -28,6 +24,8 @@ mod overrides;
 ///
 /// * `validate` - The final `build` method will return a `Result`, calling the type's `Validate` implementation before
 ///     returning the constructed value.
+/// * `update` - The completed stage of the builder will have setters for all fields, and a `From` impl will be created
+///     to allow an instance of the struct to be converted back into the builder type for further updates.
 /// * `crate` - Indicates the path to the `staged_builder` crate root. Useful when reexporting the macro from another
 ///     crate. Defaults to `::staged_builder`.
 /// * `mod` - The name of the submodule that will contain the generated builder types. Defaults to the struct's name
@@ -501,7 +499,7 @@ fn final_stage(
 
     let setters = fields
         .iter()
-        .filter(|f| f.default.is_some())
+        .filter(|f| overrides.update || f.default.is_some())
         .map(|f| final_stage_setter(overrides, f));
 
     let build_docs =
@@ -511,6 +509,12 @@ fn final_stage(
         validated_build(input, overrides, fields)
     } else {
         unvalidated_build(input, overrides, fields)
+    };
+
+    let update_from_impl = if overrides.update {
+        update_from_impl(input, overrides, fields)
+    } else {
+        quote!()
     };
 
     quote! {
@@ -525,6 +529,8 @@ fn final_stage(
             #[doc = #build_docs]
             #build
         }
+
+        #update_from_impl
     }
 }
 
@@ -717,6 +723,34 @@ fn unvalidated_build(
     }
 }
 
+fn update_from_impl(
+    input: &DeriveInput,
+    overrides: &StructOverrides,
+    fields: &[ResolvedField<'_>],
+) -> TokenStream {
+    let struct_name = &input.ident;
+    let struct_path = if overrides.inline {
+        quote!(#struct_name)
+    } else {
+        quote!(super::#struct_name)
+    };
+
+    let builder = builder_name(overrides);
+    let complete = final_name(overrides);
+    let fields = fields.iter().map(|f| f.field.ident.as_ref().unwrap());
+
+    quote! {
+        impl From<#struct_path> for #builder<#complete> {
+            #[inline]
+            fn from(v: #struct_path) -> Self {
+                #builder(#complete {
+                    #(#fields: v.#fields,)*
+                })
+            }
+        }
+    }
+}
+
 fn resolve_fields<'a>(
     overrides: &StructOverrides,
     fields: &'a FieldsNamed,
@@ -750,6 +784,7 @@ struct StructOverrides {
     inline: bool,
     builder: Option<Ident>,
     complete: Option<Ident>,
+    update: bool,
 }
 
 impl StructOverrides {
@@ -964,16 +999,16 @@ impl<'a> ResolvedField<'a> {
     }
 }
 
-// #[derive(StructMeta, Default)]
-// struct FieldOverrides {
-//     default: Option<NameValue<Option<Expr>>>,
-//     into: bool,
-//     custom: Option<NameArgs<CustomOverrides>>,
-//     list: Option<NameArgs<SeqOverrides>>,
-//     set: Option<NameArgs<SeqOverrides>>,
-//     map: Option<NameArgs<MapOverrides>>,
-//     stage: Option<Ident>,
-// }
+#[derive(StructMeta, Default)]
+struct FieldOverrides {
+    default: Option<NameValue<Option<Expr>>>,
+    into: bool,
+    custom: Option<NameArgs<CustomOverrides>>,
+    list: Option<NameArgs<SeqOverrides>>,
+    set: Option<NameArgs<SeqOverrides>>,
+    map: Option<NameArgs<MapOverrides>>,
+    stage: Option<Ident>,
+}
 
 impl FieldOverrides {
     fn new(attrs: &[Attribute]) -> Result<Self, Error> {
@@ -987,28 +1022,28 @@ impl FieldOverrides {
     }
 }
 
-// #[derive(StructMeta)]
-// struct CustomOverrides {
-//     #[struct_meta(name = "type")]
-//     type_: Type,
-//     convert: Expr,
-// }
+#[derive(StructMeta)]
+struct CustomOverrides {
+    #[struct_meta(name = "type")]
+    type_: Type,
+    convert: Expr,
+}
 
-// #[derive(StructMeta)]
-// struct SeqOverrides {
-//     item: NameArgs<ParamOverrides>,
-// }
+#[derive(StructMeta)]
+struct SeqOverrides {
+    item: NameArgs<ParamOverrides>,
+}
 
-// #[derive(StructMeta)]
-// struct ParamOverrides {
-//     #[struct_meta(name = "type")]
-//     type_: Option<Type>,
-//     into: bool,
-//     custom: Option<NameArgs<CustomOverrides>>,
-// }
+#[derive(StructMeta)]
+struct ParamOverrides {
+    #[struct_meta(name = "type")]
+    type_: Option<Type>,
+    into: bool,
+    custom: Option<NameArgs<CustomOverrides>>,
+}
 
-// #[derive(StructMeta)]
-// struct MapOverrides {
-//     key: NameArgs<ParamOverrides>,
-//     value: NameArgs<ParamOverrides>,
-// }
+#[derive(StructMeta)]
+struct MapOverrides {
+    key: NameArgs<ParamOverrides>,
+    value: NameArgs<ParamOverrides>,
+}

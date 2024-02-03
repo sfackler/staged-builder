@@ -225,3 +225,23 @@ fn custom_names() {
     let expected = CustomNames { a: 1 };
     assert_eq!(actual, expected);
 }
+
+#[derive(PartialEq, Debug)]
+#[staged_builder]
+#[builder(update)]
+struct Update {
+    a: i32,
+    #[builder(into)]
+    b: String,
+}
+
+#[test]
+fn update() {
+    let v = Update::builder().a(1).b("hello").build();
+    let actual = update::Builder::from(v).a(2).b("world").build();
+    let expected = Update {
+        a: 2,
+        b: "world".to_string(),
+    };
+    assert_eq!(actual, expected);
+}
