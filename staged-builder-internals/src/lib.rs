@@ -728,6 +728,7 @@ fn update_from_impl(
     overrides: &StructOverrides,
     fields: &[ResolvedField<'_>],
 ) -> TokenStream {
+    let private = overrides.private();
     let struct_name = &input.ident;
     let struct_path = if overrides.inline {
         quote!(#struct_name)
@@ -740,7 +741,7 @@ fn update_from_impl(
     let fields = fields.iter().map(|f| f.field.ident.as_ref().unwrap());
 
     quote! {
-        impl From<#struct_path> for #builder<#complete> {
+        impl #private::From<#struct_path> for #builder<#complete> {
             #[inline]
             fn from(v: #struct_path) -> Self {
                 #builder(#complete {
