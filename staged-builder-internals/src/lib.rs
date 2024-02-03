@@ -1,13 +1,17 @@
 use heck::{ToSnakeCase, ToUpperCamelCase};
+use overrides::{FieldOverrides, ParamOverrides};
 use proc_macro2::{Span, TokenStream};
 use quote::quote;
-use structmeta::{NameArgs, NameValue, StructMeta};
+use structmeta::{NameArgs, StructMeta};
 use syn::parse::{Parse, ParseStream};
 use syn::spanned::Spanned;
 use syn::{
     parse_macro_input, Attribute, Data, DeriveInput, Error, Expr, Field, Fields, FieldsNamed,
-    Ident, Path, Type, Visibility,
+    Ident, Path, Visibility,
 };
+
+#[allow(warnings, clippy::all)]
+mod overrides;
 
 /// Creates a staged builder interface for structs.
 ///
@@ -960,16 +964,16 @@ impl<'a> ResolvedField<'a> {
     }
 }
 
-#[derive(StructMeta, Default)]
-struct FieldOverrides {
-    default: Option<NameValue<Option<Expr>>>,
-    into: bool,
-    custom: Option<NameArgs<CustomOverrides>>,
-    list: Option<NameArgs<SeqOverrides>>,
-    set: Option<NameArgs<SeqOverrides>>,
-    map: Option<NameArgs<MapOverrides>>,
-    stage: Option<Ident>,
-}
+// #[derive(StructMeta, Default)]
+// struct FieldOverrides {
+//     default: Option<NameValue<Option<Expr>>>,
+//     into: bool,
+//     custom: Option<NameArgs<CustomOverrides>>,
+//     list: Option<NameArgs<SeqOverrides>>,
+//     set: Option<NameArgs<SeqOverrides>>,
+//     map: Option<NameArgs<MapOverrides>>,
+//     stage: Option<Ident>,
+// }
 
 impl FieldOverrides {
     fn new(attrs: &[Attribute]) -> Result<Self, Error> {
@@ -983,28 +987,28 @@ impl FieldOverrides {
     }
 }
 
-#[derive(StructMeta)]
-struct CustomOverrides {
-    #[struct_meta(name = "type")]
-    type_: Type,
-    convert: Expr,
-}
+// #[derive(StructMeta)]
+// struct CustomOverrides {
+//     #[struct_meta(name = "type")]
+//     type_: Type,
+//     convert: Expr,
+// }
 
-#[derive(StructMeta)]
-struct SeqOverrides {
-    item: NameArgs<ParamOverrides>,
-}
+// #[derive(StructMeta)]
+// struct SeqOverrides {
+//     item: NameArgs<ParamOverrides>,
+// }
 
-#[derive(StructMeta)]
-struct ParamOverrides {
-    #[struct_meta(name = "type")]
-    type_: Option<Type>,
-    into: bool,
-    custom: Option<NameArgs<CustomOverrides>>,
-}
+// #[derive(StructMeta)]
+// struct ParamOverrides {
+//     #[struct_meta(name = "type")]
+//     type_: Option<Type>,
+//     into: bool,
+//     custom: Option<NameArgs<CustomOverrides>>,
+// }
 
-#[derive(StructMeta)]
-struct MapOverrides {
-    key: NameArgs<ParamOverrides>,
-    value: NameArgs<ParamOverrides>,
-}
+// #[derive(StructMeta)]
+// struct MapOverrides {
+//     key: NameArgs<ParamOverrides>,
+//     value: NameArgs<ParamOverrides>,
+// }
