@@ -39,7 +39,7 @@ pub use staged_builder_internals::staged_builder;
 // Not part of the public API.
 #[doc(hidden)]
 pub mod __private {
-    pub use core::convert::Into;
+    pub use core::convert::{From, Into};
     pub use core::default::Default;
     pub use core::iter::{Extend, FromIterator, IntoIterator, Iterator};
     pub use core::result::Result;
