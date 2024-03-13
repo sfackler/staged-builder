@@ -10,7 +10,7 @@ repository = "https://github.com/sfackler/staged-builder"
 proc-macro = true
 
 [dependencies]
-heck = "0.4"
+heck = "0.5"
 proc-macro2 = "1"
 quote = "1"
 structmeta = "0.3"
