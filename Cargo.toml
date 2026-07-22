@@ -3,4 +3,4 @@ resolver = "2"
 members = ["staged-builder", "staged-builder-internals"]
 
 [workspace.package]
-version = "0.2.0"
+version = "0.2.1"
