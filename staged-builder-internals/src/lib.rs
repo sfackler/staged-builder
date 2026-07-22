@@ -23,15 +23,15 @@ use syn::{
 /// Options can be applied at the struct level via the `#[builder(...)]` attribute as a comma-separated sequence:
 ///
 /// * `validate` - The final `build` method will return a `Result`, calling the type's `Validate` implementation before
-///     returning the constructed value.
+///   returning the constructed value.
 /// * `update` - The completed stage of the builder will have setters for all fields, and a `From` impl will be created
-///     to allow an instance of the struct to be converted back into the builder type for further updates.
+///   to allow an instance of the struct to be converted back into the builder type for further updates.
 /// * `crate` - Indicates the path to the `staged_builder` crate root. Useful when reexporting the macro from another
-///     crate. Defaults to `::staged_builder`.
+///   crate. Defaults to `::staged_builder`.
 /// * `mod` - The name of the submodule that will contain the generated builder types. Defaults to the struct's name
-///     converted to `snake_case`.
+///   converted to `snake_case`.
 /// * `inline` - Causes the generated builder types to be defined in the same module as the struct, rather than a
-///     submodule.
+///   submodule.
 /// * `builder` - Sets the name of the generated builder type. Defaults to `Builder`.
 /// * `complete` - Sets the name of the generated complete stage type. Defaults to `Complete`.
 ///
@@ -40,29 +40,29 @@ use syn::{
 /// Options can be applied to individual fields via the `#[builder(...)]` attribute as a comma-separated sequence:
 ///
 /// * `default` - Causes the field to be considered optional. The [`Default`] trait is normally used to generate the
-///     default field value. A custom default can be specified with `default = <expr>`, where `<expr>` is an expression.
+///   default field value. A custom default can be specified with `default = <expr>`, where `<expr>` is an expression.
 /// * `into` - Causes the setter method for the field to take `impl Into<FieldType>` rather than `FieldType` directly.
 /// * `custom` - Causes the setter method to perform an arbitrary conversion for the field. The option expects a `type`
-///     which will be used as the argument type in the setter, and a `convert` callable expression which will be invoked
-///     by the setter. For example, the annotation `#[builder(into)]` on a field of type `T` is equivalent to the
-///     annotation `#[builder(custom(type = impl Into<T>, convert = Into::into))]`.
+///   which will be used as the argument type in the setter, and a `convert` callable expression which will be invoked
+///   by the setter. For example, the annotation `#[builder(into)]` on a field of type `T` is equivalent to the
+///   annotation `#[builder(custom(type = impl Into<T>, convert = Into::into))]`.
 /// * `list` - Causes the field to be treated as a "list style" type. It will default to an empty collection, and three
-///     setter methods will be generated: `push_foo` to add a single value, `foo` to set the contents, and `extend_foo`
-///     to exend the collection with new values. The underlying type must have a `push` method, a [`FromIterator`]
-///     implementation, and an [`Extend`] implementation. The item type must be configured in the attribute:
-///     `#[builder(list(item(type = YourItemType)))]`.
+///   setter methods will be generated: `push_foo` to add a single value, `foo` to set the contents, and `extend_foo`
+///   to exend the collection with new values. The underlying type must have a `push` method, a [`FromIterator`]
+///   implementation, and an [`Extend`] implementation. The item type must be configured in the attribute:
+///   `#[builder(list(item(type = YourItemType)))]`.
 /// * `set` - Causes the field to be treated as a "set style" type. It will default to an empty collection, and three
-///     setter methods will be generated: `insert_foo` to add a single value, `foo` to set the contents, and
-///     `extend_foo` to exend the collection with new values. The underlying type must have an `insert` method, a
-///     [`FromIterator`] implementation, and an [`Extend`] implementation. The item type must be configured in the
-///     attribute: `#[builder(set(item(type = YourItemType)))]`.
+///   setter methods will be generated: `insert_foo` to add a single value, `foo` to set the contents, and
+///   `extend_foo` to exend the collection with new values. The underlying type must have an `insert` method, a
+///   [`FromIterator`] implementation, and an [`Extend`] implementation. The item type must be configured in the
+///   attribute: `#[builder(set(item(type = YourItemType)))]`.
 /// * `map` - Causes the field to be treated as a "map style" type. It will default to an empty collection, and three
-///     setter methods will be generated: `insert_foo` to add a single entry, `foo` to set the contents, and
-///     `extend_foo` to exend the collection with new entries. The underlying type must have an `insert` method, a
-///     [`FromIterator`] implementation, and an [`Extend`] implementation. The key and value types must be configured in
-///     the attribute: `#[builder(map(key(type = YourKeyType), value(type = YourValueType)))]`.
+///   setter methods will be generated: `insert_foo` to add a single entry, `foo` to set the contents, and
+///   `extend_foo` to exend the collection with new entries. The underlying type must have an `insert` method, a
+///   [`FromIterator`] implementation, and an [`Extend`] implementation. The key and value types must be configured in
+///   the attribute: `#[builder(map(key(type = YourKeyType), value(type = YourValueType)))]`.
 /// * `stage`- Sets the name of the generated stage type. Defaults to the name of the field converted to `PascalCase`
-///     with `Stage` appended.
+///   with `Stage` appended.
 ///
 /// # Collection type options
 ///
@@ -282,7 +282,7 @@ fn module(
     let vis = &input.vis;
     let module_name = module_name(overrides, input);
 
-    let module_docs = format!("Builder types for [`{}`].", &input.ident);
+    let module_docs = format!("Builder types for [`{}`].", input.ident);
 
     quote! {
         #[doc = #module_docs]
@@ -455,7 +455,7 @@ fn stage_vis(vis: &Visibility, overrides: &StructOverrides) -> TokenStream {
         Visibility::Restricted(restricted) => {
             let path = &restricted.path;
             if path.leading_colon.is_some()
-                || path.segments.first().map_or(false, |i| i.ident == "crate")
+                || path.segments.first().is_some_and(|i| i.ident == "crate")
             {
                 quote!(#vis)
             } else if restricted.path.is_ident("self") {
