@@ -36,7 +36,7 @@ impl Validate for Validated {
     type Error = &'static str;
 
     fn validate(&self) -> Result<(), Self::Error> {
-        if self.even % 2 == 0 {
+        if self.even.is_multiple_of(2) {
             Ok(())
         } else {
             Err("is odd")
