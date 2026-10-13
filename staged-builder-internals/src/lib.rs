@@ -431,8 +431,10 @@ fn stage(
             #(#existing_names: #existing_types,)*
         }
 
+        #[automatically_derived]
         impl #builder_name<#stage_name> {
             #[doc = #setter_docs]
+            #[allow(clippy::redundant_field_names)]
             #[inline]
             pub fn #name(self, #name: #type_) -> #builder_name<#next_stage> {
                 #builder_name(#next_stage {
@@ -523,6 +525,7 @@ fn final_stage(
             #(#names: #types,)*
         }
 
+        #[automatically_derived]
         impl #builder_name<#stage_name> {
             #(#setters)*
 
@@ -545,6 +548,7 @@ fn final_stage_setter(
             let docs = format!("Sets the `{name}` field.");
             quote! {
                 #[doc = #docs]
+                #[allow(clippy::redundant_field_names)]
                 #[inline]
                 pub fn #name(mut self, #name: #type_) -> Self {
                     self.0.#name = #assign;
